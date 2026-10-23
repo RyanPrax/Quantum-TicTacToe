@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qttt"
+version = "0.1.0"
+description = "Quantum tic-tac-toe winner detection with Grover search"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Ryan Prax" }]
+dependencies = [
+    "qiskit>=2.6.1,<3",
+    "qiskit-aer~=0.18.0",
+    "qiskit-ibm-runtime~=0.51.0",
+    "matplotlib>=3.11",
+    "pylatexenc>=2.10",
+    "ipykernel>=7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1"]
+
+[project.scripts]
+qttt = "qttt.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

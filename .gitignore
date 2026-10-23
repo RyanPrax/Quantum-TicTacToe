@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets (IBM Quantum tokens, API keys)
+.env
+.env.*
+*.token
+qiskit-ibm.json
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
