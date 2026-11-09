@@ -6,6 +6,7 @@ from qttt.board import (
     O,
     WIN_LINES,
     X,
+    boards_by_win_count,
     classical_winning_lines,
     legal_positions,
     other_player,
@@ -113,3 +114,11 @@ def test_double_wins_only_happen_on_turn_nine(positions):
     for p in doubles:
         assert p.last_player == X
         assert EMPTY not in p.board
+
+
+def test_boards_by_win_count():
+    groups = boards_by_win_count()
+    assert {k: len(v) for k, v in groups.items()} == {0: 3446, 1: 920, 2: 22}
+    for boards in groups.values():
+        assert boards == sorted(boards)
+        assert all(9 - b.count(EMPTY) >= 5 for b in boards)

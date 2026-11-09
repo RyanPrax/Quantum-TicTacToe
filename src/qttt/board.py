@@ -99,3 +99,19 @@ def legal_positions() -> Iterator[Position]:
             if child not in seen:
                 seen.add(child)
                 stack.append((child, mover))
+
+
+def boards_by_win_count() -> dict[int, list[tuple[str, ...]]]:
+    """Group the boards the game checks for a winner by how many lines the last player filled.
+
+    The game checks from turn 5 onward, the first turn a line is possible.
+    Keys are 0, 1 and 2 (3,446, 920 and 22 boards); each list is sorted.
+    """
+    groups: dict[int, list[tuple[str, ...]]] = {0: [], 1: [], 2: []}
+    for p in legal_positions():
+        if p.last_player is None or 9 - p.board.count(EMPTY) < 5:
+            continue
+        groups[len(classical_winning_lines(p.board, p.last_player))].append(p.board)
+    for boards in groups.values():
+        boards.sort()
+    return groups

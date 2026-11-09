@@ -33,9 +33,8 @@ def build_search_circuit(
     variant: str,
     board: Sequence[str],
     player: str | None = None,
-    iterations: int = 2,
 ) -> QuantumCircuit:
-    """Build a Grover search over the 8 winning lines for the given board.
+    """Build a one-iteration Grover search over the 8 winning lines for the given board.
 
     Registers are named "board", "line" and "phase", and the line register is
     measured into a classical register named "line_cl". The "full" variant
@@ -43,8 +42,6 @@ def build_search_circuit(
     """
     if variant not in VARIANTS:
         raise ValueError(f"Unknown variant {variant!r}; expected one of {VARIANTS}.")
-    if iterations < 0:
-        raise ValueError("Iterations must be non-negative.")
 
     board_reg = QuantumRegister(18, name="board")
     line_reg = QuantumRegister(3, name="line")
@@ -60,11 +57,10 @@ def build_search_circuit(
     qc.h(line_reg)
     qc.barrier(label="Setup")
 
-    for i in range(iterations):
-        full_oracle(qc, board_reg, line_reg, phase_reg[0])
-        qc.barrier(label=f"Oracle_{i + 1}")
-        diffuser(qc, line_reg)
-        qc.barrier(label=f"Diffuser_{i + 1}")
+    full_oracle(qc, board_reg, line_reg, phase_reg[0])
+    qc.barrier(label="Oracle")
+    diffuser(qc, line_reg)
+    qc.barrier(label="Diffuser")
 
     qc.measure(line_reg, line_cl)
     return qc

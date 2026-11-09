@@ -12,7 +12,7 @@ from qiskit.circuit import QuantumRegister
 from qiskit.quantum_info import Statevector
 from qiskit_aer import AerSimulator
 
-from qttt.board import EMPTY, O, X, classical_winning_lines, legal_positions
+from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.encoding import (
     bitstring_to_line_index,
     cell_bits,
@@ -21,16 +21,15 @@ from qttt.encoding import (
 )
 from qttt.grover import build_search_circuit
 
-THRESHOLD = 0.9
 SAMPLE_SIZE = 10
 SEED = 4903
 
 _SIMULATOR = AerSimulator(method="statevector")
 
 
-def line_probabilities(variant, board, player=None, iterations=2):
+def line_probabilities(variant, board, player=None):
     """Exact probability of measuring each line index 0-7."""
-    qc = build_search_circuit(variant, board, player, iterations)
+    qc = build_search_circuit(variant, board, player)
     line_reg = qc.qregs[1]
     qc = qc.remove_final_measurements(inplace=False)
     qc.save_probabilities(line_reg)
@@ -38,20 +37,7 @@ def line_probabilities(variant, board, player=None, iterations=2):
     return list(result.data()["probabilities"])
 
 
-def _boards_by_win_count():
-    groups = {0: [], 1: [], 2: []}
-    for p in legal_positions():
-        # The game only checks for a winner from turn 5 onward.
-        if p.last_player is None or 9 - p.board.count(EMPTY) < 5:
-            continue
-        lines = classical_winning_lines(p.board, p.last_player)
-        groups[len(lines)].append(p.board)
-    for boards in groups.values():
-        boards.sort()
-    return groups
-
-
-_GROUPS = _boards_by_win_count()
+_GROUPS = boards_by_win_count()
 _rng = random.Random(SEED)
 NO_WIN_SAMPLE = _rng.sample(_GROUPS[0], SAMPLE_SIZE)
 SINGLE_WIN_SAMPLE = _rng.sample(_GROUPS[1], SAMPLE_SIZE)
@@ -96,40 +82,27 @@ def test_encode_full_board_marks():
     assert probs[expected] == pytest.approx(1.0)
 
 
-# --- Full (22-qubit) oracle, fixed 2 iterations ---
+# --- Full (22-qubit) oracle ---
+# One Grover iteration over 8 lines: M = 1 puts 25/32 on the winner and 1/32 on
+# each other line; M = 2 puts 1/2 on each winner and 0 elsewhere.
 
 @pytest.mark.parametrize("board", SINGLE_WIN_SAMPLE, ids=lambda b: "".join(b).replace(" ", "."))
 def test_full_oracle_single_win(board):
     probs = line_probabilities("full", board)
-    top = max(range(8), key=probs.__getitem__)
-    assert {top} == _winners(board)
-    assert probs[top] >= THRESHOLD
+    (winner,) = _winners(board)
+    for i in range(8):
+        assert probs[i] == pytest.approx(25 / 32 if i == winner else 1 / 32, abs=1e-9)
 
 
 @pytest.mark.parametrize("board", NO_WIN_SAMPLE, ids=lambda b: "".join(b).replace(" ", "."))
 def test_full_oracle_no_win(board):
     probs = line_probabilities("full", board)
-    assert max(probs) < THRESHOLD
     assert probs == pytest.approx([1 / 8] * 8)
 
 
-@pytest.mark.xfail(strict=True, reason="Known double-win bug: fixed 2 iterations; fixed by the adaptive detector")
 @pytest.mark.parametrize("board", DOUBLE_WINS, ids=lambda b: "".join(b).replace(" ", "."))
 def test_full_oracle_double_win(board):
     probs = line_probabilities("full", board)
-    found = {i for i, p in enumerate(probs) if p >= THRESHOLD}
-    assert found == _winners(board)
-
-
-def test_full_oracle_double_win_looks_like_no_winner():
-    # Why the bug happens: with M = 2 of 8 lines marked, 2 iterations land back on uniform.
-    probs = line_probabilities("full", DOUBLE_WINS[0])
-    assert probs == pytest.approx([1 / 8] * 8)
-
-
-def test_full_oracle_double_win_one_iteration():
-    # With M = 2, one iteration puts 50% on each winning line.
-    board = DOUBLE_WINS[0]
-    probs = line_probabilities("full", board, iterations=1)
+    winners = _winners(board)
     for i in range(8):
-        assert probs[i] == pytest.approx(0.5 if i in _winners(board) else 0.0, abs=1e-9)
+        assert probs[i] == pytest.approx(0.5 if i in winners else 0.0, abs=1e-9)
