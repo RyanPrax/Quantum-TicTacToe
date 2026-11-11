@@ -11,8 +11,8 @@ import random
 
 import pytest
 from qiskit import QuantumCircuit
-from qiskit_aer.primitives import SamplerV2
 
+from qttt.backends import IdealBackend
 from qttt.board import EMPTY, WIN_LINES, O, X, boards_by_win_count, classical_winning_lines
 from qttt.detector import (
     DEFAULT_BUDGET,
@@ -22,9 +22,10 @@ from qttt.detector import (
     SearchRun,
     _binomial_log_pmf,
     _binomial_tail,
-    _flag_and_check,
     binomial_cutoff,
     detect_winner,
+    detect_winners,
+    flag_and_check,
     run_search,
 )
 
@@ -173,8 +174,8 @@ def test_search_run_probabilities():
 def test_detection_result_properties():
     run = _run()
     result = DetectionResult(
-        board=TOP_ROW, variant="full", winner=X, lines=frozenset({0}),
-        candidates=(0, 7), rejected=(7,), cutoff=153, budget=0.1, run=run,
+        board=TOP_ROW, variant="player", player=X, winner=X, lines=frozenset({0}),
+        candidates=(0, 7), rejected=(7,), cutoffs=(153,) * 8, budget=0.1, run=run,
     )
     assert result.probabilities == run.probabilities
     assert result.checks == 2
@@ -184,12 +185,12 @@ def test_results_are_frozen():
     run = _run()
     with pytest.raises(dataclasses.FrozenInstanceError):
         run.shots = 1
-    result = DetectionResult(TOP_ROW, "full", None, frozenset(), (), (), 153, 0.1, run)
+    result = DetectionResult(TOP_ROW, "player", X, None, frozenset(), (), (), (153,) * 8, 0.1, run)
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.winner = X
 
 
-# --- _flag_and_check (made-up counts, no circuit) ---
+# --- flag_and_check (made-up counts, no circuit) ---
 
 DOUBLE_WIN = (X, X, X,
               X, O, O,
@@ -219,8 +220,8 @@ DOUBLE_WIN = (X, X, X,
           _, O, _), (0, 0, 0, 0, 1024, 0, 0, 0), ((4,), (), frozenset({4}), O)),
     ],
 )
-def test_flag_and_check(board, counts, expected):
-    assert _flag_and_check(board, counts, 153) == expected
+def testflag_and_check(board, counts, expected):
+    assert flag_and_check(board, counts, 153) == expected
 
 
 def test_flag_and_check_only_reads_flagged_lines():
@@ -231,13 +232,13 @@ def test_flag_and_check_only_reads_flagged_lines():
             return super().__getitem__(i)
 
     board = Board(TOP_ROW)
-    assert _flag_and_check(board, (1024, 0, 0, 0, 0, 0, 0, 0), 153)[3] == X
+    assert flag_and_check(board, (1024, 0, 0, 0, 0, 0, 0, 0), 153)[3] == X
 
 
 # --- run_search ---
 
 def test_run_search_counts():
-    run = run_search(TOP_ROW, player=X, sampler=SamplerV2(seed=SEED))
+    run = run_search(TOP_ROW, player=X, backend=IdealBackend(seed=SEED))
     assert run.shots == DEFAULT_SHOTS
     assert len(run.counts) == NUM_LINES
     assert sum(run.counts) == DEFAULT_SHOTS
@@ -246,8 +247,8 @@ def test_run_search_counts():
 
 
 def test_run_search_is_repeatable_with_seed():
-    a = run_search(TOP_ROW, player=X, shots=256, sampler=SamplerV2(seed=SEED))
-    b = run_search(TOP_ROW, player=X, shots=256, sampler=SamplerV2(seed=SEED))
+    a = run_search(TOP_ROW, player=X, shots=256, backend=IdealBackend(seed=SEED))
+    b = run_search(TOP_ROW, player=X, shots=256, backend=IdealBackend(seed=SEED))
     assert a.counts == b.counts
 
 
@@ -266,36 +267,39 @@ def _check_result(result, board):
     assert not set(result.lines) & set(result.rejected)
     assert result.checks == len(result.candidates)
     assert result.board == tuple(board)
-    assert result.cutoff == binomial_cutoff(result.run.shots, result.budget)
+    assert result.cutoffs == (binomial_cutoff(result.run.shots, result.budget),) * NUM_LINES
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("board", SINGLE_WIN_SAMPLE, ids=_board_id)
 def test_detect_single_win(board):
-    result = detect_winner(board, variant="full", sampler=SamplerV2(seed=SEED))
+    result = detect_winner(board, variant="full", backend=IdealBackend(seed=SEED))
     _check_result(result, board)
     (line,) = _winners(board)
     assert result.lines == {line}
     assert result.winner == board[WIN_LINES[line][0]]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("board", NO_WIN_SAMPLE, ids=_board_id)
 def test_detect_no_win(board):
-    result = detect_winner(board, variant="full", sampler=SamplerV2(seed=SEED))
+    result = detect_winner(board, variant="full", backend=IdealBackend(seed=SEED))
     _check_result(result, board)
     assert result.winner is None
     assert result.lines == frozenset()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("board", DOUBLE_WINS, ids=_board_id)
 def test_detect_double_win(board):
-    result = detect_winner(board, variant="full", sampler=SamplerV2(seed=SEED))
+    result = detect_winner(board, variant="full", backend=IdealBackend(seed=SEED))
     _check_result(result, board)
     assert result.winner == X
     assert result.lines == _winners(board)
 
 
 def test_detect_winner_returns_tuple_board():
-    result = detect_winner(list(TOP_ROW), player=X, shots=256, sampler=SamplerV2(seed=SEED))
+    result = detect_winner(list(TOP_ROW), player=X, shots=256, backend=IdealBackend(seed=SEED))
     assert result.board == TOP_ROW
     assert result.variant == "player"
     assert result.budget == DEFAULT_BUDGET
@@ -306,7 +310,7 @@ def test_detect_winner_checks_input_before_running(kwargs, monkeypatch):
     def fail(*args, **kw):
         raise AssertionError("circuit ran before input was checked")
 
-    monkeypatch.setattr("qttt.detector.run_search", fail)
+    monkeypatch.setattr("qttt.detector.run_searches", fail)
     with pytest.raises(ValueError):
         detect_winner(TOP_ROW, **kwargs)
 
@@ -320,7 +324,7 @@ def _last_player(board):
 @pytest.mark.parametrize("board", SINGLE_WIN_SAMPLE + NO_WIN_SAMPLE + DOUBLE_WINS, ids=_board_id)
 def test_detect_player_variant(board):
     player = _last_player(board)
-    result = detect_winner(board, player=player, sampler=SamplerV2(seed=SEED))
+    result = detect_winner(board, player=player, backend=IdealBackend(seed=SEED))
     _check_result(result, board)
     assert result.variant == "player"
     assert result.lines == _winners(board)
@@ -331,3 +335,69 @@ def test_detect_player_variant(board):
 def test_detect_player_variant_needs_player():
     with pytest.raises(ValueError):
         detect_winner(TOP_ROW)
+
+
+# --- profile modes: calibration inside the same job ---
+
+class _CountingBackend(IdealBackend):
+    """Ideal backend that records each job's size."""
+
+    def __init__(self, seed=None):
+        super().__init__(seed)
+        self.jobs = []
+
+    def run(self, circuits, shots):
+        self.jobs.append(len(circuits))
+        return super().run(circuits, shots)
+
+
+def test_auto_on_ideal_backend_does_not_calibrate():
+    backend = _CountingBackend(seed=SEED)
+    result = detect_winner(TOP_ROW, player=X, shots=256, backend=backend)
+    assert result.profile.source == "ideal"
+    assert backend.jobs == [1]
+
+
+def test_calibrate_runs_in_the_same_job():
+    backend = _CountingBackend(seed=SEED)
+    cases = [(TOP_ROW, X), (DOUBLE_WIN, X)]
+    results = detect_winners(cases, shots=2048, backend=backend, profile="calibrate")
+    assert backend.jobs == [NUM_LINES + 1 + len(cases)]  # readout circuits, known board, the boards
+    profile = results[0].profile
+    assert profile.source == "calibration:ideal"
+    assert profile.line_qubits == results[0].run.metrics.line_qubits
+    assert profile.epsilon == pytest.approx(0.0, abs=0.05)  # no noise to find
+    assert [r.winner for r in results] == [X, X]
+    assert results[0].cutoffs == profile.cutoffs(2048, DEFAULT_BUDGET)
+
+
+def test_published_profile_on_ideal_backend_is_ideal():
+    result = detect_winner(TOP_ROW, player=X, shots=256, backend=IdealBackend(seed=SEED), profile="published")
+    assert result.profile.epsilon == 0.0
+    assert result.cutoffs == (binomial_cutoff(256, DEFAULT_BUDGET),) * NUM_LINES
+
+
+def test_unknown_profile_mode_is_refused_before_running(monkeypatch):
+    monkeypatch.setattr("qttt.backends.Backend.run", lambda *a, **k: pytest.fail("ran"))
+    with pytest.raises(ValueError, match="Unknown profile"):
+        detect_winner(TOP_ROW, player=X, profile="best")
+
+
+def test_calibration_is_stored_and_linked(tmp_path):
+    from qttt.results import RunStore
+
+    store = RunStore(tmp_path)
+    detect_winners([(TOP_ROW, X), (DOUBLE_WIN, X)], shots=256, backend=IdealBackend(seed=SEED),
+                   profile="calibrate", store=store)
+    (calibration,) = store.load("calibration")
+    detections = store.load("detection")
+    assert len(detections) == 2
+    assert {d["calibration_id"] for d in detections} == {calibration["id"]}
+    assert detections[0]["profile"]["source"] == "calibration:ideal"
+
+
+@pytest.mark.slow
+def test_calibrate_with_legacy_full_variant():
+    result = detect_winner(TOP_ROW, variant="full", shots=512, backend=IdealBackend(seed=SEED), profile="calibrate")
+    assert result.winner == X
+    assert result.profile.epsilon == pytest.approx(0.0, abs=0.05)

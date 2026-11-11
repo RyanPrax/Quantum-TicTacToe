@@ -1,0 +1,359 @@
+"""Run search circuits on simulators and hardware through one interface.
+
+A Backend transpiles circuits, runs a batch of them as one job, and turns the
+results into 8 counts per circuit (one per line index). Calibration data
+(gate errors, readout errors) is optional: a provider that publishes none can
+still be used through calibration runs (see qttt.noise.calibrate).
+
+Only IBM is implemented so far. Real IBM devices need an account, read in this
+order: the QISKIT_IBM_TOKEN environment variable (and optionally
+QISKIT_IBM_INSTANCE), the same names in a .env file in the current directory or
+a parent (see .env.example), or an account saved once with
+QiskitRuntimeService.save_account(). .env is git-ignored; never put a token in
+code or in a committed file.
+"""
+
+import math
+import os
+import warnings
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
+from qiskit.circuit import CircuitInstruction
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_aer import AerSimulator
+from qiskit_aer.primitives import SamplerV2 as AerSampler
+
+from qttt.board import EMPTY, X
+from qttt.encoding import bitstring_to_line_index, line_index_to_bitstring
+from qttt.grover import board_flips, build_search_circuit
+from qttt.stats import NUM_LINES
+
+LINE_REGISTER = "line_cl"
+
+
+@dataclass(frozen=True)
+class CircuitMetrics:
+    """Cost of a transpiled circuit on one backend."""
+    two_qubit_gates: int
+    depth: int
+    log10_esp: float | None  # None when the backend publishes no gate errors
+    line_qubits: tuple[int, ...]  # physical qubit measured into line_cl[0], [1], [2]
+    transpile_seed: int | None
+
+
+@dataclass(frozen=True)
+class JobOutput:
+    """Counts per line index for each circuit in a job, plus the provider's job id."""
+    counts: tuple[tuple[int, ...], ...]
+    job_id: str | None
+
+
+class Backend(ABC):
+    """Common interface for every place a circuit can run.
+
+    Search circuits are transpiled once per variant from an empty board (the
+    template); each board then only adds X gates on the physical qubits where
+    its board qubits start. Every board gets the same routed circuit, so gate
+    counts, ESP and the measured line qubits are the same for all boards, and
+    the compiler never sees the board.
+    """
+
+    name: str
+    provider: str
+    simulated: bool
+
+    def __init__(self):
+        self._templates: dict[str, QuantumCircuit] = {}
+
+    @abstractmethod
+    def transpile(self, circuit: QuantumCircuit) -> QuantumCircuit:
+        """Rewrite any circuit for this backend."""
+
+    def search_template(self, variant: str) -> QuantumCircuit:
+        """The transpiled search circuit for an empty board."""
+        if variant not in self._templates:
+            player = X if variant == "player" else None
+            self._templates[variant] = self.transpile(build_search_circuit(variant, [EMPTY] * 9, player))
+        return self._templates[variant]
+
+    def search_circuit(self, variant: str, board: Sequence[str], player: str | None = None) -> QuantumCircuit:
+        """The transpiled search circuit for a board: the template plus the board's X gates."""
+        flips = board_flips(variant, board, player)
+        template = self.search_template(variant)
+        layout = (template.layout.initial_index_layout(filter_ancillas=True)
+                  if template.layout is not None else list(range(template.num_qubits)))
+        prep = QuantumCircuit(template.num_qubits)
+        for logical in flips:
+            prep.x(layout[logical])
+        prep = self._native(prep)
+        tqc = template.copy()
+        for inst in reversed(prep.data):
+            tqc.data.insert(0, CircuitInstruction(inst.operation, tuple(tqc.qubits[prep.find_bit(q).index]
+                                                                         for q in inst.qubits)))
+        return tqc
+
+    def _native(self, circuit: QuantumCircuit) -> QuantumCircuit:
+        """Single-qubit gates rewritten into the backend's own gate set, on the same qubits."""
+        return circuit
+
+    @abstractmethod
+    def _sample(self, circuits: Sequence[QuantumCircuit], shots: int) -> tuple[list[dict[str, int]], str | None]:
+        """Run transpiled circuits as one job; return line_cl counts per circuit and the job id."""
+
+    def readout_circuits(self, line_qubits: Sequence[int]) -> list[QuantumCircuit]:
+        """8 transpiled circuits that prepare line index 0-7 directly on the given physical qubits."""
+        return [_prepare_line_index(i) for i in range(NUM_LINES)]
+
+    def gate_log10_esp(self, tqc: QuantumCircuit) -> float | None:
+        """log10 of the product of (1 - error) over every gate, or None without gate errors."""
+        return None
+
+    def readout_errors(self, qubits: Sequence[int]) -> list[tuple[float, float]] | None:
+        """Per qubit (P(read 1 | prepared 0), P(read 0 | prepared 1)), or None if unpublished."""
+        return None
+
+    def calibration_date(self) -> str | None:
+        """When the published calibration data was taken, if there is any."""
+        return None
+
+    def options(self) -> dict:
+        """Run options to record with each result."""
+        return {}
+
+    def run(self, circuits: Sequence[QuantumCircuit], shots: int) -> JobOutput:
+        """Run transpiled circuits as one job and count each line index."""
+        raw, job_id = self._sample(circuits, shots)
+        counts = []
+        for circuit_counts in raw:
+            per_line = [0] * NUM_LINES
+            for bits, n in circuit_counts.items():
+                per_line[bitstring_to_line_index(bits)] = n
+            counts.append(tuple(per_line))
+        return JobOutput(tuple(counts), job_id)
+
+    def metrics(self, tqc: QuantumCircuit) -> CircuitMetrics:
+        return CircuitMetrics(
+            two_qubit_gates=two_qubit_count(tqc),
+            depth=tqc.depth(),
+            log10_esp=self.gate_log10_esp(tqc),
+            line_qubits=line_qubits(tqc),
+            transpile_seed=tqc.metadata.get("transpile_seed"),
+        )
+
+
+class IdealBackend(Backend):
+    """The perfect Aer simulator. A fixed seed makes the counts repeatable."""
+
+    name = "ideal"
+    provider = "aer"
+    simulated = True
+
+    def __init__(self, seed: int | None = None):
+        super().__init__()
+        self.seed = seed
+        self._simulator = AerSimulator()
+
+    def transpile(self, circuit):
+        tqc = transpile(circuit, self._simulator, seed_transpiler=self.seed)
+        tqc.metadata = {**(tqc.metadata or {}), "transpile_seed": self.seed}
+        return tqc
+
+    def _sample(self, circuits, shots):
+        result = AerSampler(seed=self.seed).run(list(circuits), shots=shots).result()
+        return [_line_counts(r) for r in result], None
+
+    def options(self):
+        return {"seed": self.seed}
+
+
+class IBMBackend(Backend):
+    """An IBM device, real or fake.
+
+    Fake backends (snapshots of real devices) run on Aer with the device's
+    noise model; real devices run through IBM's runtime Sampler. The
+    transpiler is tried with `transpile_seeds` seeds and the circuit with the
+    highest ESP is kept; later circuits with the same number of qubits reuse
+    that layout so they read out on the same physical qubits.
+    """
+
+    provider = "ibm"
+
+    def __init__(self, backend, *, seed: int | None = None, transpile_seeds: int = 1,
+                 sampler_options: dict | None = None, simulate: bool | None = None):
+        from qiskit_ibm_runtime.fake_provider.fake_backend import FakeBackendV2
+
+        if transpile_seeds < 1:
+            raise ValueError(f"transpile_seeds must be at least 1, got {transpile_seeds}")
+        super().__init__()
+        self.backend = backend
+        self.name = backend.name
+        self.simulated = isinstance(backend, FakeBackendV2) if simulate is None else simulate
+        self.seed = seed
+        self.transpile_seeds = transpile_seeds
+        self.sampler_options = dict(sampler_options or {})
+
+    def transpile(self, circuit):
+        base = self.seed or 0
+        best, best_score = None, None
+        for s in range(base, base + self.transpile_seeds):
+            pm = generate_preset_pass_manager(optimization_level=3, backend=self.backend,
+                                              seed_transpiler=s, qubits_initially_zero=False)
+            tqc = pm.run(circuit)
+            esp = self.gate_log10_esp(tqc)
+            score = (esp if esp is not None else 0.0, -two_qubit_count(tqc))
+            if best_score is None or score > best_score:
+                best, best_score = tqc, score
+                best.metadata = {**(circuit.metadata or {}), "transpile_seed": s}
+        return best
+
+    def _native(self, circuit):
+        basis = list(self.backend.target.operation_names)
+        if all(inst.operation.name in basis for inst in circuit.data):
+            return circuit
+        return transpile(circuit, basis_gates=basis, optimization_level=0)
+
+    def readout_circuits(self, line_qubits):
+        return [transpile(_prepare_line_index(i), self.backend, initial_layout=list(line_qubits),
+                          optimization_level=1, seed_transpiler=self.seed)
+                for i in range(NUM_LINES)]
+
+    def _sample(self, circuits, shots):
+        if self.simulated:
+            sampler = AerSampler.from_backend(self.backend, seed=self.seed)
+            result = sampler.run(list(circuits), shots=shots).result()
+            return [_line_counts(r) for r in result], None
+        # The client-side Sampler replaces the runtime SamplerV2 (deprecated in qiskit-ibm-runtime 0.50).
+        from qiskit_ibm_runtime.executor_sampler import Sampler as RuntimeSampler
+
+        job = RuntimeSampler(mode=self.backend, options=self.sampler_options or None).run(list(circuits), shots=shots)
+        return [_line_counts(r) for r in job.result()], job.job_id()
+
+    def gate_log10_esp(self, tqc):
+        target = self.backend.target
+        total = 0.0
+        found = False
+        for inst in tqc.data:
+            name = inst.operation.name
+            if name in ("barrier", "measure") or name not in target:
+                continue
+            props = target[name].get(tuple(tqc.find_bit(q).index for q in inst.qubits))
+            if props is not None and props.error is not None:
+                found = True
+                # Summed as logs: ESP itself can be smaller than a float can hold.
+                total += math.log10(1 - props.error) if props.error < 1 else -math.inf
+        return total if found else None
+
+    def readout_errors(self, qubits):
+        props = self.backend.properties() if hasattr(self.backend, "properties") else None
+        errors = []
+        for q in qubits:
+            info = props.qubit_property(q) if props is not None else {}
+            if "prob_meas1_prep0" in info and "prob_meas0_prep1" in info:
+                errors.append((info["prob_meas1_prep0"][0], info["prob_meas0_prep1"][0]))
+                continue
+            measure = self.backend.target["measure"].get((q,)) if "measure" in self.backend.target else None
+            if measure is None or measure.error is None:
+                return None
+            errors.append((measure.error, measure.error))  # only the average is published
+        return errors
+
+    def calibration_date(self):
+        props = self.backend.properties() if hasattr(self.backend, "properties") else None
+        return props.last_update_date.isoformat() if props is not None else None
+
+    def options(self):
+        return {"seed": self.seed, "transpile_seeds": self.transpile_seeds,
+                "sampler_options": self.sampler_options}
+
+
+def get_backend(name: str, *, seed: int | None = None, transpile_seeds: int = 1,
+                sampler_options: dict | None = None, instance: str | None = None) -> Backend:
+    """Backend by name: "ideal", a fake IBM backend such as "fake_berlin", or a real IBM device."""
+    if name == "ideal":
+        return IdealBackend(seed)
+    if name.startswith("fake_"):
+        from qiskit_ibm_runtime.fake_provider import FakeProviderForBackendV2
+
+        with warnings.catch_warnings():
+            # Loading the catalog builds every fake backend; fake_nighthawk warns that its errors are placeholders.
+            warnings.filterwarnings("ignore", message="Properties of fake_nighthawk")
+            device = FakeProviderForBackendV2().backend(name)
+    else:
+        device = _runtime_service(instance).backend(name)
+    return IBMBackend(device, seed=seed, transpile_seeds=transpile_seeds, sampler_options=sampler_options)
+
+
+def _runtime_service(instance=None):
+    """IBM account from QISKIT_IBM_TOKEN (environment or .env) if set, otherwise the saved account."""
+    from qiskit_ibm_runtime import QiskitRuntimeService
+
+    load_dotenv()
+    instance = instance or os.environ.get("QISKIT_IBM_INSTANCE") or None
+    token = os.environ.get("QISKIT_IBM_TOKEN")
+    if token:
+        return QiskitRuntimeService(channel="ibm_quantum_platform", token=token, instance=instance)
+    return QiskitRuntimeService(instance=instance)
+
+
+def load_dotenv(start: str | os.PathLike | None = None) -> Path | None:
+    """Read KEY=value lines from the nearest .env (start directory, then its parents) into os.environ.
+
+    Variables that are already set are left alone, so the real environment wins.
+    Blank lines and # comments are skipped; values may be quoted. Returns the
+    file used, or None. Nothing read here is printed or logged.
+    """
+    directory = Path(start or Path.cwd()).resolve()
+    for folder in (directory, *directory.parents):
+        path = folder / ".env"
+        if path.is_file():
+            break
+    else:
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+    return path
+
+
+def two_qubit_count(tqc: QuantumCircuit) -> int:
+    return sum(1 for inst in tqc.data if inst.operation.num_qubits == 2 and inst.operation.name != "barrier")
+
+
+def line_qubits(tqc: QuantumCircuit) -> tuple[int, ...]:
+    """Physical qubit measured into line_cl[0], [1], [2]."""
+    found = {}
+    for inst in tqc.data:
+        if inst.operation.name != "measure":
+            continue
+        for register, index in tqc.find_bit(inst.clbits[0]).registers:
+            if register.name == LINE_REGISTER:
+                found[index] = tqc.find_bit(inst.qubits[0]).index
+    return tuple(found[b] for b in sorted(found))
+
+
+def _prepare_line_index(index: int) -> QuantumCircuit:
+    """Prepare one line index on a bare 3-qubit line register and measure it."""
+    line_reg = QuantumRegister(3, name="line")
+    line_cl = ClassicalRegister(3, name=LINE_REGISTER)
+    qc = QuantumCircuit(line_reg, line_cl, name=f"readout_{index}")
+    for q, bit in enumerate(reversed(line_index_to_bitstring(index))):
+        if bit == "1":
+            qc.x(line_reg[q])
+    qc.barrier()
+    qc.measure(line_reg, line_cl)
+    return qc
+
+
+def _line_counts(pub_result) -> dict[str, int]:
+    return getattr(pub_result.data, LINE_REGISTER).get_counts()

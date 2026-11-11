@@ -109,6 +109,7 @@ def test_encode_player_board_rejects_bad_input(board, player):
 # One Grover iteration over 8 lines: M = 1 puts 25/32 on the winner and 1/32 on
 # each other line; M = 2 puts 1/2 on each winner and 0 elsewhere.
 
+@pytest.mark.slow
 @pytest.mark.parametrize("board", SINGLE_WIN_SAMPLE, ids=lambda b: "".join(b).replace(" ", "."))
 def test_full_oracle_single_win(board):
     probs = line_probabilities("full", board)
@@ -117,12 +118,14 @@ def test_full_oracle_single_win(board):
         assert probs[i] == pytest.approx(25 / 32 if i == winner else 1 / 32, abs=1e-9)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("board", NO_WIN_SAMPLE, ids=lambda b: "".join(b).replace(" ", "."))
 def test_full_oracle_no_win(board):
     probs = line_probabilities("full", board)
     assert probs == pytest.approx([1 / 8] * 8)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("board", DOUBLE_WINS, ids=lambda b: "".join(b).replace(" ", "."))
 def test_full_oracle_double_win(board):
     probs = line_probabilities("full", board)
@@ -164,6 +167,7 @@ def _expected(winners):
     return [0.5 if i in winners else 0.0 for i in range(8)]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("wins", [0, 1, 2], ids=["no_win", "single_win", "double_win"])
 def test_player_oracle_every_board(player_probabilities, wins):
     boards = _GROUPS[wins]
@@ -175,6 +179,7 @@ def test_player_oracle_every_board(player_probabilities, wins):
     assert not wrong, f"{len(wrong)} of {len(boards)} boards wrong, e.g. {wrong[:3]}"
 
 
+@pytest.mark.slow
 def test_player_oracle_opponent_never_wins(player_probabilities):
     # The opponent of the last mover owns no line, so the search stays uniform.
     wrong = [

@@ -29,3 +29,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: long simulations (22-qubit circuits, every board, fake-backend noise); skip with -m \"not slow\""]

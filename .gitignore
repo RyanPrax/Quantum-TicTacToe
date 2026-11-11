@@ -21,6 +21,7 @@ dist/
 # Secrets (IBM Quantum tokens, API keys)
 .env
 .env.*
+!.env.example
 *.token
 qiskit-ibm.json
 

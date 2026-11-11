@@ -30,6 +30,28 @@ def diffuser(qc: QuantumCircuit, qubits: QuantumRegister) -> None:
     qc.h(qubits)
 
 
+def board_qubit_count(variant: str) -> int:
+    """Size of the board register: 18 for "full", 9 for "player"."""
+    if variant not in VARIANTS:
+        raise ValueError(f"Unknown variant {variant!r}; expected one of {VARIANTS}.")
+    return 18 if variant == "full" else 9
+
+
+def board_flips(variant: str, board: Sequence[str], player: str | None = None) -> list[int]:
+    """Indices of the board-register qubits the encoder sets to |1> for this board.
+
+    The board register is the first register of the search circuit, so these
+    are also the board's qubit indices in build_search_circuit().
+    """
+    board_reg = QuantumRegister(board_qubit_count(variant), name="board")
+    qc = QuantumCircuit(board_reg)
+    if variant == "full":
+        encode_full_board(qc, board_reg, board)
+    else:
+        encode_player_board(qc, board_reg, board, player)
+    return [qc.find_bit(inst.qubits[0]).index for inst in qc.data]
+
+
 def build_search_circuit(
     variant: str,
     board: Sequence[str],
@@ -43,10 +65,7 @@ def build_search_circuit(
     The legacy "full" variant (22 qubits, the class version) checks both
     players, so it ignores player.
     """
-    if variant not in VARIANTS:
-        raise ValueError(f"Unknown variant {variant!r}; expected one of {VARIANTS}.")
-
-    board_reg = QuantumRegister(18 if variant == "full" else 9, name="board")
+    board_reg = QuantumRegister(board_qubit_count(variant), name="board")
     line_reg = QuantumRegister(3, name="line")
     phase_reg = QuantumRegister(1, name="phase")
     line_cl = ClassicalRegister(3, name="line_cl")
