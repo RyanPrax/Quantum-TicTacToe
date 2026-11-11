@@ -237,7 +237,7 @@ def test_flag_and_check_only_reads_flagged_lines():
 # --- run_search ---
 
 def test_run_search_counts():
-    run = run_search(TOP_ROW, sampler=SamplerV2(seed=SEED))
+    run = run_search(TOP_ROW, player=X, sampler=SamplerV2(seed=SEED))
     assert run.shots == DEFAULT_SHOTS
     assert len(run.counts) == NUM_LINES
     assert sum(run.counts) == DEFAULT_SHOTS
@@ -246,8 +246,8 @@ def test_run_search_counts():
 
 
 def test_run_search_is_repeatable_with_seed():
-    a = run_search(TOP_ROW, shots=256, sampler=SamplerV2(seed=SEED))
-    b = run_search(TOP_ROW, shots=256, sampler=SamplerV2(seed=SEED))
+    a = run_search(TOP_ROW, player=X, shots=256, sampler=SamplerV2(seed=SEED))
+    b = run_search(TOP_ROW, player=X, shots=256, sampler=SamplerV2(seed=SEED))
     assert a.counts == b.counts
 
 
@@ -256,7 +256,7 @@ def test_run_search_rejects_unknown_variant():
         run_search(TOP_ROW, variant="nope")
 
 
-# --- detect_winner, end to end on the ideal simulator ---
+# --- detect_winner, legacy 22-qubit full variant, end to end on the ideal simulator ---
 
 def _check_result(result, board):
     winners = _winners(board)
@@ -271,7 +271,7 @@ def _check_result(result, board):
 
 @pytest.mark.parametrize("board", SINGLE_WIN_SAMPLE, ids=_board_id)
 def test_detect_single_win(board):
-    result = detect_winner(board, sampler=SamplerV2(seed=SEED))
+    result = detect_winner(board, variant="full", sampler=SamplerV2(seed=SEED))
     _check_result(result, board)
     (line,) = _winners(board)
     assert result.lines == {line}
@@ -280,7 +280,7 @@ def test_detect_single_win(board):
 
 @pytest.mark.parametrize("board", NO_WIN_SAMPLE, ids=_board_id)
 def test_detect_no_win(board):
-    result = detect_winner(board, sampler=SamplerV2(seed=SEED))
+    result = detect_winner(board, variant="full", sampler=SamplerV2(seed=SEED))
     _check_result(result, board)
     assert result.winner is None
     assert result.lines == frozenset()
@@ -288,16 +288,16 @@ def test_detect_no_win(board):
 
 @pytest.mark.parametrize("board", DOUBLE_WINS, ids=_board_id)
 def test_detect_double_win(board):
-    result = detect_winner(board, sampler=SamplerV2(seed=SEED))
+    result = detect_winner(board, variant="full", sampler=SamplerV2(seed=SEED))
     _check_result(result, board)
     assert result.winner == X
     assert result.lines == _winners(board)
 
 
 def test_detect_winner_returns_tuple_board():
-    result = detect_winner(list(TOP_ROW), shots=256, sampler=SamplerV2(seed=SEED))
+    result = detect_winner(list(TOP_ROW), player=X, shots=256, sampler=SamplerV2(seed=SEED))
     assert result.board == TOP_ROW
-    assert result.variant == "full"
+    assert result.variant == "player"
     assert result.budget == DEFAULT_BUDGET
 
 
@@ -309,3 +309,25 @@ def test_detect_winner_checks_input_before_running(kwargs, monkeypatch):
     monkeypatch.setattr("qttt.detector.run_search", fail)
     with pytest.raises(ValueError):
         detect_winner(TOP_ROW, **kwargs)
+
+
+# --- detect_winner, default 13-qubit player variant ---
+
+def _last_player(board):
+    return X if board.count(X) > board.count(O) else O
+
+
+@pytest.mark.parametrize("board", SINGLE_WIN_SAMPLE + NO_WIN_SAMPLE + DOUBLE_WINS, ids=_board_id)
+def test_detect_player_variant(board):
+    player = _last_player(board)
+    result = detect_winner(board, player=player, sampler=SamplerV2(seed=SEED))
+    _check_result(result, board)
+    assert result.variant == "player"
+    assert result.lines == _winners(board)
+    assert result.winner == (player if result.lines else None)
+    assert result.run.circuit.num_qubits == 13
+
+
+def test_detect_player_variant_needs_player():
+    with pytest.raises(ValueError):
+        detect_winner(TOP_ROW)

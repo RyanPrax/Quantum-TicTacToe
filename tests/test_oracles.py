@@ -1,7 +1,8 @@
 """Check each oracle against the classical checker.
 
 The 22-qubit simulation takes about a second per board, so the full oracle is
-tested on a fixed sample of boards plus every double-win board.
+tested on a fixed sample of boards plus every double-win board. The 13-qubit
+player oracle is fast enough to test on every board the game checks.
 """
 
 import random
@@ -17,6 +18,7 @@ from qttt.encoding import (
     bitstring_to_line_index,
     cell_bits,
     encode_full_board,
+    encode_player_board,
     line_index_to_bitstring,
 )
 from qttt.grover import build_search_circuit
@@ -42,6 +44,10 @@ _rng = random.Random(SEED)
 NO_WIN_SAMPLE = _rng.sample(_GROUPS[0], SAMPLE_SIZE)
 SINGLE_WIN_SAMPLE = _rng.sample(_GROUPS[1], SAMPLE_SIZE)
 DOUBLE_WINS = _GROUPS[2]
+
+
+def _last_player(board):
+    return X if board.count(X) > board.count(O) else O
 
 
 def _winners(board):
@@ -82,6 +88,23 @@ def test_encode_full_board_marks():
     assert probs[expected] == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize(("player", "expected"), [(X, 0b10101), (O, 0b01010)])
+def test_encode_player_board_marks(player, expected):
+    # X owns cells 0, 2, 4 and O owns cells 1, 3; qubit c is |1> when the player owns cell c.
+    board = [X, O, X, O, X, EMPTY, EMPTY, EMPTY, EMPTY]
+    board_reg = QuantumRegister(9, name="board")
+    qc = QuantumCircuit(board_reg)
+    encode_player_board(qc, board_reg, board, player)
+    assert Statevector(qc).probabilities()[expected] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(("board", "player"), [([EMPTY] * 9, EMPTY), ([EMPTY] * 9, None), ([EMPTY] * 8, X)])
+def test_encode_player_board_rejects_bad_input(board, player):
+    board_reg = QuantumRegister(9, name="board")
+    with pytest.raises(ValueError):
+        encode_player_board(QuantumCircuit(board_reg), board_reg, board, player)
+
+
 # --- Full (22-qubit) oracle ---
 # One Grover iteration over 8 lines: M = 1 puts 25/32 on the winner and 1/32 on
 # each other line; M = 2 puts 1/2 on each winner and 0 elsewhere.
@@ -106,3 +129,69 @@ def test_full_oracle_double_win(board):
     winners = _winners(board)
     for i in range(8):
         assert probs[i] == pytest.approx(0.5 if i in winners else 0.0, abs=1e-9)
+
+
+# --- Player (13-qubit) oracle, every board from turn 5 on ---
+
+@pytest.fixture(scope="module")
+def player_probabilities():
+    """Exact line probabilities for every board, keyed by (board, player).
+
+    Each board runs for the player who just moved (the real case) and for the
+    opponent (who never has a line). Aer runs mcx directly, so the circuits
+    skip transpiling and run as one batch.
+    """
+    keys = [(board, player) for group in _GROUPS.values() for board in group
+            for player in (_last_player(board), _other(board))]
+    circuits = []
+    for board, player in keys:
+        qc = build_search_circuit("player", board, player).remove_final_measurements(inplace=False)
+        qc.save_probabilities(qc.qregs[1])
+        circuits.append(qc)
+    result = _SIMULATOR.run(circuits).result()
+    return {key: list(result.data(i)["probabilities"]) for i, key in enumerate(keys)}
+
+
+def _other(board):
+    return O if _last_player(board) == X else X
+
+
+def _expected(winners):
+    if not winners:
+        return [1 / 8] * 8
+    if len(winners) == 1:
+        return [25 / 32 if i in winners else 1 / 32 for i in range(8)]
+    return [0.5 if i in winners else 0.0 for i in range(8)]
+
+
+@pytest.mark.parametrize("wins", [0, 1, 2], ids=["no_win", "single_win", "double_win"])
+def test_player_oracle_every_board(player_probabilities, wins):
+    boards = _GROUPS[wins]
+    wrong = [
+        board for board in boards
+        if player_probabilities[(board, _last_player(board))]
+        != pytest.approx(_expected(_winners(board)), abs=1e-9)
+    ]
+    assert not wrong, f"{len(wrong)} of {len(boards)} boards wrong, e.g. {wrong[:3]}"
+
+
+def test_player_oracle_opponent_never_wins(player_probabilities):
+    # The opponent of the last mover owns no line, so the search stays uniform.
+    wrong = [
+        board for group in _GROUPS.values() for board in group
+        if player_probabilities[(board, _other(board))] != pytest.approx([1 / 8] * 8)
+    ]
+    assert not wrong, f"{len(wrong)} boards wrong, e.g. {wrong[:3]}"
+
+
+def test_player_variant_size_and_gates():
+    qc = build_search_circuit("player", SINGLE_WIN_SAMPLE[0], _last_player(SINGLE_WIN_SAMPLE[0]))
+    assert qc.num_qubits == 13
+    mcx = [inst for inst in qc.data if inst.operation.name == "mcx"]
+    # 8 oracle MCX gates with 6 controls; the diffuser's 2-control MCX is a ccx.
+    assert [len(inst.qubits) - 1 for inst in mcx] == [6] * 8
+
+
+def test_player_variant_needs_player():
+    with pytest.raises(ValueError):
+        build_search_circuit("player", SINGLE_WIN_SAMPLE[0])

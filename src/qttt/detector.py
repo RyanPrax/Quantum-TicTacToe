@@ -81,7 +81,7 @@ class DetectionResult:
     def checks(self) -> int:
         return len(self.candidates)
 
-def run_search(board, variant="full", player=None, shots=DEFAULT_SHOTS, sampler=None) -> SearchRun:
+def run_search(board, variant="player", player=None, shots=DEFAULT_SHOTS, sampler=None) -> SearchRun:
     """Run the search circuit once and count how often each line index was measured."""
     qc = build_search_circuit(variant, board, player)
     if sampler is None:
@@ -116,12 +116,14 @@ def _flag_and_check(board, counts, cutoff):
     winner = board[WIN_LINES[min(lines)][0]] if lines else None
     return candidates, rejected, lines, winner
 
-def detect_winner(board, variant="full", player=None, shots=DEFAULT_SHOTS,
+def detect_winner(board, variant="player", player=None, shots=DEFAULT_SHOTS,
                   budget=DEFAULT_BUDGET, sampler=None) -> DetectionResult:
     """Detect whether anyone has won, using one Grover search plus classical checks.
 
     Lines measured at least `cutoff` times are checked on the board; any line
-    reported in the result is a real winning line.
+    reported in the result is a real winning line. The default 13-qubit
+    "player" variant needs player, the one who just moved; the legacy 22-qubit
+    "full" variant checks both players and ignores it.
     """
     cutoff = binomial_cutoff(shots, budget)
     run = run_search(board, variant, player, shots, sampler)

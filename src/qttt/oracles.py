@@ -63,3 +63,36 @@ def full_oracle(
 
         for qubit in reversed(temp_line_flips):
             qc.x(qubit)
+
+
+def player_oracle(
+    qc: QuantumCircuit,
+    board_reg: QuantumRegister,
+    line_reg: QuantumRegister,
+    phase_qubit: Qubit,
+) -> None:
+    """Oracle for the 13-qubit version: checks every line for the player who just moved.
+
+    Expects board_reg loaded by encode_player_board() (9 qubits, qubit c is |1>
+    when the player owns cell c) and phase_qubit prepared in |->, so each MCX
+    acts as a phase flip on the line index (phase kickback). One MCX per line,
+    each with 6 controls: the 3 line-index qubits and the line's 3 cell qubits.
+    """
+    for index, cells in enumerate(WIN_LINES):
+        code = line_index_to_bitstring(index)
+
+        # Flip line-index qubits whose bit is 0, so the controls match only this index.
+        line_controls = []
+        temp_line_flips = []
+        for q_index, bit in enumerate(reversed(code)):
+            if bit == "0":
+                qc.x(line_reg[q_index])
+                temp_line_flips.append(line_reg[q_index])
+            line_controls.append(line_reg[q_index])
+
+        # An owned cell is already |1>, so the cell qubits are controls as they are.
+        controls = line_controls + [board_reg[cell] for cell in cells]
+        qc.mcx(controls, phase_qubit)
+
+        for qubit in reversed(temp_line_flips):
+            qc.x(qubit)

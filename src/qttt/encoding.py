@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from qiskit import QuantumCircuit
 from qiskit.circuit import QuantumRegister
 
-from qttt.board import O, X
+from qttt.board import O, PLAYERS, X
 
 
 def cell_bits(cell: int) -> tuple[int, int]:
@@ -29,6 +29,22 @@ def encode_full_board(qc: QuantumCircuit, board_reg: QuantumRegister, board: Seq
             qc.x(board_reg[q1])
         elif mark == O:
             qc.x(board_reg[q0])
+
+
+def encode_player_board(qc: QuantumCircuit, board_reg: QuantumRegister, board: Sequence[str], player: str) -> None:
+    """Load one player's marks into a 9-qubit register, 1 qubit per cell.
+
+    Qubit c is |1> when the player owns cell c, and |0> when the cell is empty
+    or the opponent's. Encoding for the 13-qubit "player" variant, where the
+    player is whoever just moved (the only one who can have a line).
+    """
+    if len(board) != 9:
+        raise ValueError("Board must have exactly 9 cells.")
+    if player not in PLAYERS:
+        raise ValueError(f"Player must be 'X' or 'O', got {player!r}.")
+    for cell, mark in enumerate(board):
+        if mark == player:
+            qc.x(board_reg[cell])
 
 
 def line_index_to_bitstring(index: int) -> str:
