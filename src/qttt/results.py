@@ -1,7 +1,10 @@
 """Permanent, append-only store of every run.
 
 Each run is one JSON object on its own line in <root>/runs.jsonl, and the
-transpiled circuit it ran is saved as <root>/circuits/<id>.qpy. Records are
+transpiled circuit it ran is saved as <root>/circuits/<id>.qpy. A job leaves a
+"job" record as soon as it is submitted and another with its raw counts as soon
+as they are back, so a crash or a lost kernel never loses a job that ran
+(finish one with qttt.detector.resume_job). Records are
 only ever appended: nothing here edits or deletes a past run. Commit the files
 to keep them; load them back with RunStore.load() (or pandas.read_json(path,
 lines=True)).
@@ -47,11 +50,57 @@ class RunStore:
         self.runs_file = self.root / "runs.jsonl"
         self.circuits_dir = self.root / "circuits"
 
-    def save_detection(self, result, backend, calibration_id: str | None = None, tag: str | None = None) -> str:
+    def save_job_submitted(self, job_id, backend, template, *, cases, variant, shots, budget, known, profile,
+                           tag: str | None = None) -> str:
+        """Record a job the moment it is submitted, with everything resume_job needs to finish it.
+
+        template is the backend's transpiled empty-board search circuit; profile is
+        the fixed profile the cutoffs will come from, or None when the job calibrates.
+        """
+        record = {
+            "kind": "job",
+            "status": "submitted",
+            "tag": tag,
+            "job_id": job_id,
+            "variant": variant,
+            "shots": shots,
+            "budget": budget,
+            "cases": [{"board": "".join(board), "player": player} for board, player in cases],
+            "known": [{"board": "".join(board), "player": player} for board, player in known],
+            "calibrate": profile is None,
+            "profile": _profile_summary(profile),
+            "backend": _backend_fields(backend),
+        }
+        return self._append(record, template)
+
+    def save_job_output(self, submitted_id: str | None, output) -> str:
+        """Record a job's raw counts as soon as they are back, before anything else can fail."""
+        record = {
+            "kind": "job",
+            "status": "done",
+            "submitted_id": submitted_id,
+            "job_id": output.job_id,
+            "counts": [list(c) for c in output.counts],
+        }
+        return self._append(record, None)
+
+    def job(self, ref: str) -> tuple[dict, dict | None]:
+        """The submitted record of a job, by provider job id or record id, and its done record (None if missing)."""
+        jobs = self.load("job")
+        submitted = [r for r in jobs if r["status"] == "submitted" and ref in (r["id"], r["job_id"])]
+        if not submitted:
+            raise KeyError(f"no submitted job {ref!r} in {self.runs_file}")
+        submitted = submitted[-1]
+        done = [r for r in jobs if r["status"] == "done" and r["submitted_id"] == submitted["id"]]
+        return submitted, (done[-1] if done else None)
+
+    def save_detection(self, result, backend, calibration_id: str | None = None, tag: str | None = None,
+                       job_record: str | None = None) -> str:
         """Record one detect_winner() result and the backend it ran on; returns the record id.
 
         calibration_id links the result to the calibration record its cutoffs came
-        from; tag names the experiment or batch it belongs to. The record also
+        from; job_record to the job's submitted record; tag names the experiment
+        or batch it belongs to. The record also
         holds the board's true label (true_lines, worked out classically), so a
         result can be scored without recomputing anything.
         """
@@ -60,6 +109,7 @@ class RunStore:
         record = {
             "kind": "detection",
             "tag": tag,
+            "job_record": job_record,
             "calibration_id": calibration_id,
             "variant": result.variant,
             "board": "".join(result.board),
@@ -79,7 +129,8 @@ class RunStore:
         }
         return self._append(record, run.transpiled)
 
-    def save_calibration(self, profile, output, backend, known, variant: str = "player", tag: str | None = None) -> str:
+    def save_calibration(self, profile, output, backend, known, variant: str = "player", tag: str | None = None,
+                         job_record: str | None = None) -> str:
         """Record a calibration: readout counts, known boards and the fitted profile.
 
         output is the job's output; its first counts are the 8 readout circuits,
@@ -89,6 +140,7 @@ class RunStore:
         record = {
             "kind": "calibration",
             "tag": tag,
+            "job_record": job_record,
             "variant": variant,
             "shots": sum(output.counts[0]),
             "readout_counts": [list(c) for c in output.counts[:num_lines]],
@@ -101,7 +153,7 @@ class RunStore:
         return self._append(record, None)
 
     def load(self, kind: str | None = None, tag: str | None = None) -> list[dict]:
-        """Every saved record, oldest first; optionally only one kind ("detection" or "calibration") or tag."""
+        """Every saved record, oldest first; optionally only one kind ("detection", "calibration" or "job") or tag."""
         if not self.runs_file.exists():
             return []
         with self.runs_file.open(encoding="utf-8") as f:

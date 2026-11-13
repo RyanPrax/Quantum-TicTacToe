@@ -17,7 +17,7 @@ import math
 import os
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,6 +80,10 @@ class Backend(ABC):
             self._templates[variant] = self.transpile(build_search_circuit(variant, [EMPTY] * 9, player))
         return self._templates[variant]
 
+    def set_search_template(self, variant: str, tqc: QuantumCircuit) -> None:
+        """Use a template transpiled earlier (for example one saved in a RunStore) instead of transpiling."""
+        self._templates[variant] = tqc
+
     def search_circuit(self, variant: str, board: Sequence[str], player: str | None = None) -> QuantumCircuit:
         """The transpiled search circuit for a board: the template plus the board's X gates."""
         flips = board_flips(variant, board, player)
@@ -101,8 +105,12 @@ class Backend(ABC):
         return circuit
 
     @abstractmethod
-    def _sample(self, circuits: Sequence[QuantumCircuit], shots: int) -> tuple[list[dict[str, int]], str | None]:
-        """Run transpiled circuits as one job; return line_cl counts per circuit and the job id."""
+    def _sample(self, circuits: Sequence[QuantumCircuit], shots: int,
+                on_submit: Callable[[str | None], None]) -> tuple[list[dict[str, int]], str | None]:
+        """Run transpiled circuits as one job; return line_cl counts per circuit and the job id.
+
+        on_submit(job_id) is called once the job is submitted, before waiting for its results.
+        """
 
     def readout_circuits(self, line_qubits: Sequence[int]) -> list[QuantumCircuit]:
         """8 transpiled circuits that prepare line index 0-7 directly on the given physical qubits."""
@@ -124,16 +132,19 @@ class Backend(ABC):
         """Run options to record with each result."""
         return {}
 
-    def run(self, circuits: Sequence[QuantumCircuit], shots: int) -> JobOutput:
-        """Run transpiled circuits as one job and count each line index."""
-        raw, job_id = self._sample(circuits, shots)
-        counts = []
-        for circuit_counts in raw:
-            per_line = [0] * NUM_LINES
-            for bits, n in circuit_counts.items():
-                per_line[bitstring_to_line_index(bits)] = n
-            counts.append(tuple(per_line))
-        return JobOutput(tuple(counts), job_id)
+    def run(self, circuits: Sequence[QuantumCircuit], shots: int,
+            on_submit: Callable[[str | None], None] | None = None) -> JobOutput:
+        """Run transpiled circuits as one job and count each line index.
+
+        on_submit(job_id) is called as soon as the job is submitted, so the id
+        can be recorded before a possibly long wait in the queue.
+        """
+        raw, job_id = self._sample(circuits, shots, on_submit or (lambda job_id: None))
+        return _job_output(raw, job_id)
+
+    def fetch(self, job_id: str) -> JobOutput:
+        """The counts of a job submitted earlier, by its id (waits if it is still running)."""
+        raise NotImplementedError(f"{self.name} keeps no jobs to fetch")
 
     def metrics(self, tqc: QuantumCircuit) -> CircuitMetrics:
         return CircuitMetrics(
@@ -162,7 +173,8 @@ class IdealBackend(Backend):
         tqc.metadata = {**(tqc.metadata or {}), "transpile_seed": self.seed}
         return tqc
 
-    def _sample(self, circuits, shots):
+    def _sample(self, circuits, shots, on_submit):
+        on_submit(None)
         result = AerSampler(seed=self.seed).run(list(circuits), shots=shots).result()
         return [_line_counts(r) for r in result], None
 
@@ -221,8 +233,9 @@ class IBMBackend(Backend):
                           optimization_level=1, seed_transpiler=self.seed)
                 for i in range(NUM_LINES)]
 
-    def _sample(self, circuits, shots):
+    def _sample(self, circuits, shots, on_submit):
         if self.simulated:
+            on_submit(None)
             sampler = AerSampler.from_backend(self.backend, seed=self.seed)
             result = sampler.run(list(circuits), shots=shots).result()
             return [_line_counts(r) for r in result], None
@@ -230,7 +243,14 @@ class IBMBackend(Backend):
         from qiskit_ibm_runtime.executor_sampler import Sampler as RuntimeSampler
 
         job = RuntimeSampler(mode=self.backend, options=self.sampler_options or None).run(list(circuits), shots=shots)
+        on_submit(job.job_id())
         return [_line_counts(r) for r in job.result()], job.job_id()
+
+    def fetch(self, job_id):
+        if self.simulated:
+            return super().fetch(job_id)
+        job = self.backend.service.job(job_id)
+        return _job_output([_line_counts(r) for r in job.result()], job_id)
 
     def gate_log10_esp(self, tqc):
         target = self.backend.target
@@ -353,6 +373,17 @@ def _prepare_line_index(index: int) -> QuantumCircuit:
     qc.barrier()
     qc.measure(line_reg, line_cl)
     return qc
+
+
+def _job_output(raw: Sequence[dict[str, int]], job_id: str | None) -> JobOutput:
+    """line_cl counts per circuit, turned into counts per line index."""
+    counts = []
+    for circuit_counts in raw:
+        per_line = [0] * NUM_LINES
+        for bits, n in circuit_counts.items():
+            per_line[bitstring_to_line_index(bits)] = n
+        counts.append(tuple(per_line))
+    return JobOutput(tuple(counts), job_id)
 
 
 def _line_counts(pub_result) -> dict[str, int]:

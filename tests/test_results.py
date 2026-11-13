@@ -22,7 +22,7 @@ def store(tmp_path):
 
 def test_detection_is_saved_with_everything_needed(store):
     result = detect_winner(TOP_ROW, player=X, shots=128, backend=IdealBackend(seed=SEED), store=store)
-    (record,) = store.load()
+    (record,) = store.load("detection")
     assert record["kind"] == "detection"
     assert record["board"] == "XXXOO    "
     assert record["player"] == X
@@ -37,39 +37,41 @@ def test_detection_is_saved_with_everything_needed(store):
 
 def test_board_with_three_true_lines_is_saved(store):
     detect_winner((X,) * 9, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
-    (record,) = store.load()
+    (record,) = store.load("detection")
     assert record["label"] == "multi_win" and len(record["true_lines"]) == 8
 
 
 def test_circuit_round_trips(store):
     result = detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
-    (record,) = store.load()
+    (record,) = store.load("detection")
     assert store.load_circuit(record) == result.run.transpiled
 
 
 def test_store_only_appends(store):
     detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
-    first_line = store.runs_file.read_text().splitlines()[0]
+    first = store.runs_file.read_text().splitlines()
     detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
     lines = store.runs_file.read_text().splitlines()
-    assert len(lines) == 2
-    assert lines[0] == first_line
-    assert len({json.loads(line)["id"] for line in lines}) == 2
+    assert len(lines) == 2 * len(first)
+    assert lines[:len(first)] == first
+    assert len({json.loads(line)["id"] for line in lines}) == len(lines)
 
 
 def test_circuit_files_are_never_overwritten(store, monkeypatch):
     class SameId:
         hex = "0" * 32
 
+    backend = IdealBackend(seed=SEED)
+    result = detect_winner(TOP_ROW, player=X, shots=16, backend=backend)
     monkeypatch.setattr("qttt.results.uuid.uuid4", lambda: SameId)
-    detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
+    store.save_detection(result, backend)
     with pytest.raises(FileExistsError):
-        detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
+        store.save_detection(result, backend)
 
 
 def test_store_path_can_be_a_string(tmp_path):
     detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=str(tmp_path / "r"))
-    assert len(RunStore(tmp_path / "r").load()) == 1
+    assert len(RunStore(tmp_path / "r").load("detection")) == 1
 
 
 def test_simulator_runs_are_not_saved_by_default(tmp_path, monkeypatch):

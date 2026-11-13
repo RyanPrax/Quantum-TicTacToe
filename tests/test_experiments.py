@@ -65,9 +65,9 @@ def test_collect_splits_into_jobs(tmp_path):
     class Counting(IdealBackend):
         jobs = []
 
-        def run(self, circuits, shots):
+        def run(self, circuits, shots, on_submit=None):
             self.jobs.append(len(circuits))
-            return super().run(circuits, shots)
+            return super().run(circuits, shots, on_submit)
 
     backend = Counting(seed=SEED)
     collect(sample_boards(5, seed=SEED), backend, shots=64, store=RunStore(tmp_path), boards_per_job=2,
@@ -89,4 +89,4 @@ def test_collect_script(tmp_path, capsys):
     assert script.main(["--n", "3", "--seed", "1", "--shots", "128", "--store", str(tmp_path), "--tag", "cli"]) == 0
     out = capsys.readouterr().out
     assert "3 boards" in out and "Saved 3 results" in out
-    assert len(RunStore(tmp_path).load(tag="cli")) == 3
+    assert len(RunStore(tmp_path).load("detection", tag="cli")) == 3

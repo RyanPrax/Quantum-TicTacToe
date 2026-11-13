@@ -112,7 +112,8 @@ def test_detect_on_fake_backend_with_profile(berlin):
     assert result.cutoffs == profile.cutoffs(256, 0.1)
 
 
-def test_profile_from_other_qubits_is_refused(berlin):
+def test_profile_from_other_qubits_is_refused_before_running(berlin, monkeypatch):
+    monkeypatch.setattr("qttt.backends.Backend.run", lambda *a, **k: pytest.fail("ran"))
     profile = NoiseProfile(0.5, NoiseProfile.from_ideal().readout, "test", line_qubits=(0, 1, 2))
     with pytest.raises(ValueError, match="line qubits"):
         detect_winner(TOP_ROW, player=X, shots=16, backend=berlin, profile=profile)
@@ -133,6 +134,8 @@ def test_hardware_path_runs_locally_and_always_saves(tmp_path, monkeypatch):
     (detection,) = store.load("detection")
     assert detection["job_id"] == result.run.job_id == calibration["job_id"]
     assert detection["calibration_id"] == calibration["id"]
+    submitted, done = store.job(result.run.job_id)  # recorded on submit, counts recorded on return
+    assert detection["job_record"] == submitted["id"] and done["job_id"] == result.run.job_id
     assert detection["backend"]["simulated"] is False
     assert result.profile.source == "calibration:fake_berlin"
 

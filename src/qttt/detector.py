@@ -7,7 +7,7 @@ from typing import NamedTuple
 
 from qiskit import QuantumCircuit
 
-from qttt.backends import Backend, CircuitMetrics, IdealBackend
+from qttt.backends import Backend, CircuitMetrics, IdealBackend, JobOutput, line_qubits
 from qttt.board import EMPTY, WIN_LINES
 from qttt.grover import build_search_circuit
 from qttt.noise import DEFAULT_KNOWN, NoiseProfile, calibration_circuits, profile_from_calibration
@@ -121,8 +121,11 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
       "published": the backend's published calibration data (no extra circuits).
       "ideal": no noise, the same cutoff on every line.
       or a NoiseProfile measured earlier on the same physical qubits.
+    A profile that does not fit the circuits is refused before anything runs.
     Results are saved to store, labeled with tag; runs on real hardware are
-    always saved, to results/ unless another store is given.
+    always saved, to results/ unless another store is given. The store records
+    the job when it is submitted and its counts when they are back, so a job
+    interrupted after that can be finished with resume_job.
     """
     if backend is None:
         backend = IdealBackend()
@@ -132,24 +135,100 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
         if profile == "auto":
             profile = "ideal" if isinstance(backend, IdealBackend) else "calibrate"
     NoiseProfile.from_ideal().cutoffs(shots, budget)  # check shots and budget before anything runs
+    store = _open_store(store, backend)
 
     calibrating = profile == "calibrate"
-    known = DEFAULT_KNOWN if variant == "player" else tuple((board, None) for board, _ in DEFAULT_KNOWN)
+    known = _known(variant) if calibrating else ()
     circuits, transpiled = _search_circuits(cases, variant, backend)
     extra, line_qubits = calibration_circuits(backend, variant, known) if calibrating else ([], None)
-    out = backend.run(extra + transpiled, shots)
-    runs = _search_runs(out.counts[len(extra):], out.job_id, shots, circuits, transpiled, backend)
+    if not calibrating:
+        profile = _fixed_profile(profile, backend, variant)
+        _check_line_qubits(profile, transpiled)
 
+    submitted = []
+    def on_submit(job_id):
+        if store is not None:
+            submitted.append(store.save_job_submitted(
+                job_id, backend, backend.search_template(variant), cases=cases, variant=variant, shots=shots,
+                budget=budget, known=known, profile=None if calibrating else profile, tag=tag))
+    out = backend.run(extra + transpiled, shots, on_submit)
+    job_record = submitted[0] if submitted else None
+    try:
+        if store is not None:
+            store.save_job_output(job_record, out)
+        return _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, len(extra),
+                       None if calibrating else profile, known, line_qubits, store, tag, job_record)
+    except Exception as e:
+        if job_record is not None:
+            e.add_note(f"Job {out.job_id or job_record} ran and is recorded in {store.runs_file}; "
+                       f"finish it with resume_job({job_record!r}, backend, store).")
+        raise
+
+def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike = "results") -> list[DetectionResult]:
+    """Finish a job that detect_winners submitted but did not finish (lost kernel, crash, Ctrl-C).
+
+    job is the provider's job id or the id of the job's submitted record. The
+    counts are taken from the store if they were saved, or else fetched from the
+    provider by job id. The circuits are rebuilt from the template saved with the
+    job, so the cutoffs and records come out as if the run had not stopped.
+    """
+    if not isinstance(store, RunStore): store = RunStore(store)
+    submitted, done = store.job(job)
+    if submitted["backend"]["name"] != backend.name:
+        raise ValueError(f"job ran on {submitted['backend']['name']}, not {backend.name}")
+    if any(r.get("job_record") == submitted["id"] for r in store.load("detection")):
+        raise ValueError(f"job {job} is already finished; its detections are in {store.runs_file}")
+
+    variant = submitted["variant"]
+    cases = [(tuple(c["board"]), c["player"]) for c in submitted["cases"]]
+    known = tuple((tuple(k["board"]), k["player"]) for k in submitted["known"])
+    backend.set_search_template(variant, store.load_circuit(submitted))
+    circuits, transpiled = _search_circuits(cases, variant, backend)
+    extra, line_qubits = calibration_circuits(backend, variant, known) if submitted["calibrate"] else ([], None)
+    if done is not None:
+        out = JobOutput(tuple(tuple(c) for c in done["counts"]), done["job_id"])
+    else:
+        out = backend.fetch(submitted["job_id"])
+        store.save_job_output(submitted["id"], out)
+    saved = submitted["profile"]
+    profile = None if saved is None else NoiseProfile(
+        epsilon=saved["epsilon"], readout=tuple(tuple(row) for row in saved["readout"]), source=saved["source"],
+        line_qubits=None if saved["line_qubits"] is None else tuple(saved["line_qubits"]))
+    return _finish(cases, variant, submitted["shots"], submitted["budget"], backend, out, circuits, transpiled,
+                   len(extra), profile, known, line_qubits, store, submitted["tag"], submitted["id"])
+
+def _known(variant):
+    return DEFAULT_KNOWN if variant == "player" else tuple((board, None) for board, _ in DEFAULT_KNOWN)
+
+def _open_store(store, backend):
+    if store is None and not backend.simulated:
+        store = RunStore()
+    if store is not None and not isinstance(store, RunStore):
+        store = RunStore(store)
+    return store
+
+def _fixed_profile(profile, backend, variant) -> NoiseProfile:
+    """The profile for every mode except "calibrate", which needs the job's counts."""
+    if profile == "published":
+        return NoiseProfile.from_backend(backend, variant)
+    if profile == "ideal":
+        return NoiseProfile.from_ideal()
+    return profile
+
+def _check_line_qubits(profile, transpiled):
+    for tqc in transpiled:
+        qubits = line_qubits(tqc)
+        if profile.line_qubits is not None and qubits != profile.line_qubits:
+            raise ValueError(f"profile was measured on line qubits {profile.line_qubits}, "
+                             f"but this run reads out on {qubits}")
+
+def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, num_extra, profile, known,
+            line_qubits, store, tag, job_record) -> list[DetectionResult]:
+    """Cutoffs, verdicts and saved records from a job's counts; profile None means fit it from the job."""
+    runs = _search_runs(out.counts[num_extra:], out.job_id, shots, circuits, transpiled, backend)
+    calibrating = profile is None
     if calibrating:
         profile = profile_from_calibration(backend, out.counts, line_qubits, known)
-    elif profile == "published":
-        profile = NoiseProfile.from_backend(backend, variant)
-    elif profile == "ideal":
-        profile = NoiseProfile.from_ideal()
-    for run in runs:
-        if profile.line_qubits is not None and run.metrics.line_qubits != profile.line_qubits:
-            raise ValueError(f"profile was measured on line qubits {profile.line_qubits}, "
-                             f"but this run reads out on {run.metrics.line_qubits}")
     cutoffs = profile.cutoffs(shots, budget)
 
     results = []
@@ -169,13 +248,11 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
             profile=profile,
         ))
 
-    if store is None and not backend.simulated:
-        store = RunStore()
     if store is not None:
-        if not isinstance(store, RunStore): store = RunStore(store)
-        calibration_id = store.save_calibration(profile, out, backend, known, variant, tag) if calibrating else None
+        calibration_id = (store.save_calibration(profile, out, backend, known, variant, tag, job_record)
+                          if calibrating else None)
         for result in results:
-            store.save_detection(result, backend, calibration_id, tag)
+            store.save_detection(result, backend, calibration_id, tag, job_record)
     return results
 
 def detect_winner(board, variant="player", player=None, shots=DEFAULT_SHOTS, budget=DEFAULT_BUDGET,

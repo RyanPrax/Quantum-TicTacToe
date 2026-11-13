@@ -26,8 +26,10 @@ from qttt.detector import (
     detect_winner,
     detect_winners,
     flag_and_check,
+    resume_job,
     run_search,
 )
+from qttt.results import RunStore
 
 SAMPLE_SIZE = 10
 SEED = 4903
@@ -346,9 +348,9 @@ class _CountingBackend(IdealBackend):
         super().__init__(seed)
         self.jobs = []
 
-    def run(self, circuits, shots):
+    def run(self, circuits, shots, on_submit=None):
         self.jobs.append(len(circuits))
-        return super().run(circuits, shots)
+        return super().run(circuits, shots, on_submit)
 
 
 def test_auto_on_ideal_backend_does_not_calibrate():
@@ -401,3 +403,75 @@ def test_calibrate_with_legacy_full_variant():
     result = detect_winner(TOP_ROW, variant="full", shots=512, backend=IdealBackend(seed=SEED), profile="calibrate")
     assert result.winner == X
     assert result.profile.epsilon == pytest.approx(0.0, abs=0.05)
+
+
+# --- a job that ran is never lost ---
+
+class _StoppedBackend(IdealBackend):
+    """Ideal backend whose job is submitted but never waited for, like a kernel stopped mid-queue.
+
+    fetch returns the counts the job would have produced.
+    """
+
+    def _sample(self, circuits, shots, on_submit):
+        self.output = IdealBackend(self.seed).run(circuits, shots)
+        on_submit("job-1")
+        raise KeyboardInterrupt
+
+    def fetch(self, job_id):
+        assert job_id == "job-1"
+        return self.output
+
+
+def test_submitted_job_is_recorded_before_its_results(tmp_path):
+    store = RunStore(tmp_path)
+    backend = _StoppedBackend(seed=SEED)
+    with pytest.raises(KeyboardInterrupt):
+        detect_winners([(TOP_ROW, X)], shots=256, backend=backend, store=store, tag="t")
+    (submitted,) = store.load("job")
+    assert submitted["status"] == "submitted" and submitted["job_id"] == "job-1"
+    assert submitted["cases"] == [{"board": "XXXOO    ", "player": X}]
+    assert store.load("detection") == []
+
+    (result,) = resume_job("job-1", backend, store)
+    assert result.winner == X and result.run.counts == backend.output.counts[0]
+    assert [r["status"] for r in store.load("job")] == ["submitted", "done"]
+    (detection,) = store.load("detection")
+    assert detection["job_record"] == submitted["id"] and detection["tag"] == "t"
+
+
+def test_counts_are_saved_before_a_crash_and_the_job_can_be_finished(tmp_path, monkeypatch):
+    store = RunStore(tmp_path)
+    backend = _CountingBackend(seed=SEED)
+    cases = [(TOP_ROW, X), (DOUBLE_WIN, X)]
+    expected = detect_winners(cases, shots=256, backend=IdealBackend(seed=SEED), profile="calibrate")
+
+    def crash(*args):
+        raise RuntimeError("bug after the run")
+    monkeypatch.setattr("qttt.detector.flag_and_check", crash)
+    with pytest.raises(RuntimeError) as info:
+        detect_winners(cases, shots=256, backend=backend, profile="calibrate", store=store)
+    submitted, done = store.job(store.load("job")[0]["id"])
+    assert "resume_job" in "".join(info.value.__notes__)
+    assert done["counts"][-2:] == [list(r.run.counts) for r in expected]
+    monkeypatch.undo()
+
+    results = resume_job(submitted["id"], IdealBackend(seed=SEED), store)
+    assert backend.jobs == [NUM_LINES + 1 + 2]  # resuming runs nothing
+    assert [r.lines for r in results] == [r.lines for r in expected]
+    assert results[0].cutoffs == expected[0].cutoffs
+    (calibration,) = store.load("calibration")
+    assert {d["calibration_id"] for d in store.load("detection")} == {calibration["id"]}
+    with pytest.raises(ValueError, match="already finished"):
+        resume_job(submitted["id"], IdealBackend(seed=SEED), store)
+
+
+def test_resume_refuses_another_backend(tmp_path):
+    store = RunStore(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        detect_winners([(TOP_ROW, X)], shots=64, backend=_StoppedBackend(seed=SEED), store=store)
+
+    class Other(IdealBackend):
+        name = "other"
+    with pytest.raises(ValueError, match="ran on ideal"):
+        resume_job("job-1", Other(), store)

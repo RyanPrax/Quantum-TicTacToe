@@ -14,8 +14,8 @@ SEED = 4903
 class _NoSignalBackend(IdealBackend):
     """Ideal backend whose counts carry no Grover signal, as if noise had erased it."""
 
-    def run(self, circuits, shots):
-        out = super().run(circuits, shots)
+    def run(self, circuits, shots, on_submit=None):
+        out = super().run(circuits, shots, on_submit)
         flat = tuple(shots // 8 for _ in range(8))
         return type(out)(tuple(flat for _ in out.counts), out.job_id)
 
@@ -25,9 +25,9 @@ class _CountingBackend(IdealBackend):
         super().__init__(seed)
         self.jobs = []
 
-    def run(self, circuits, shots):
+    def run(self, circuits, shots, on_submit=None):
         self.jobs.append(len(circuits))
-        return super().run(circuits, shots)
+        return super().run(circuits, shots, on_submit)
 
 
 def _play(game, cells):

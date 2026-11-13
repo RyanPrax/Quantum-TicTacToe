@@ -9,8 +9,8 @@ from qttt.backends import IdealBackend
 class _NoSignalBackend(IdealBackend):
     """Ideal backend whose counts carry no Grover signal, as if noise had erased it."""
 
-    def run(self, circuits, shots):
-        out = super().run(circuits, shots)
+    def run(self, circuits, shots, on_submit=None):
+        out = super().run(circuits, shots, on_submit)
         return type(out)(tuple(tuple(shots // 8 for _ in range(8)) for _ in out.counts), out.job_id)
 
 
