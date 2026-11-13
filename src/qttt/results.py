@@ -151,12 +151,12 @@ def provenance() -> dict:
     return {"python": platform.python_version(), "packages": versions, **_git_state()}
 
 
-def _git_state() -> dict:
-    here = Path(__file__).resolve().parent
+def _git_state(here: Path = Path(__file__).resolve().parent) -> dict:
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=here, capture_output=True,
                                 text=True, check=True, timeout=5).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain", "--", "src"], cwd=here, capture_output=True,
+        # ":/src" is src/ at the repository root; a plain "src" would be read relative to here.
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", ":/src"], cwd=here, capture_output=True,
                                text=True, check=True, timeout=5).stdout.strip() != ""
     except (OSError, subprocess.SubprocessError):
         return {"git_commit": None, "git_dirty": None}

@@ -1,6 +1,7 @@
 """The permanent run store."""
 
 import json
+import subprocess
 
 import pytest
 
@@ -8,7 +9,7 @@ from qttt.backends import IdealBackend
 from qttt.board import O, X
 from qttt.detector import detect_winner
 from qttt.noise import calibrate
-from qttt.results import RunStore, provenance
+from qttt.results import RunStore, _git_state, provenance
 
 SEED = 4903
 TOP_ROW = (X, X, X, O, O, " ", " ", " ", " ")
@@ -97,6 +98,18 @@ def test_provenance_records_the_code_version():
     info = provenance()
     assert "git_commit" in info and "git_dirty" in info
     assert info["packages"]["qiskit"]
+
+
+def test_git_dirty_sees_changes_under_src(tmp_path):
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    (package / "code.py").write_text("x = 1\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
+    for args in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
+        subprocess.run(git + args, check=True)
+    assert _git_state(package)["git_dirty"] is False
+    (package / "code.py").write_text("x = 2\n")
+    assert _git_state(package)["git_dirty"] is True
 
 
 def test_records_never_hold_a_token(store, monkeypatch):
