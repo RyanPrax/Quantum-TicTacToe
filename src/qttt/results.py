@@ -21,7 +21,22 @@ from pathlib import Path
 
 from qiskit import qpy
 
+from qttt.board import O, X, classical_winning_lines
+
 SCHEMA_VERSION = 1
+LABELS = ("no_win", "single_win", "double_win")  # by number of true winning lines
+
+
+def win_label(num_lines: int) -> str:
+    """The label for a board with num_lines true winning lines; "multi_win" past LABELS."""
+    return LABELS[num_lines] if num_lines < len(LABELS) else "multi_win"
+
+
+def true_winning_lines(board, player) -> set[int]:
+    """The lines really won: by player, or by either player when player is None (legacy variant)."""
+    if player is not None:
+        return classical_winning_lines(board, player)
+    return classical_winning_lines(board, X) | classical_winning_lines(board, O)
 
 
 class RunStore:
@@ -32,14 +47,19 @@ class RunStore:
         self.runs_file = self.root / "runs.jsonl"
         self.circuits_dir = self.root / "circuits"
 
-    def save_detection(self, result, backend, calibration_id: str | None = None) -> str:
+    def save_detection(self, result, backend, calibration_id: str | None = None, tag: str | None = None) -> str:
         """Record one detect_winner() result and the backend it ran on; returns the record id.
 
-        calibration_id links the result to the calibration record its cutoffs came from.
+        calibration_id links the result to the calibration record its cutoffs came
+        from; tag names the experiment or batch it belongs to. The record also
+        holds the board's true label (true_lines, worked out classically), so a
+        result can be scored without recomputing anything.
         """
         run = result.run
+        true_lines = sorted(true_winning_lines(result.board, result.player))
         record = {
             "kind": "detection",
+            "tag": tag,
             "calibration_id": calibration_id,
             "variant": result.variant,
             "board": "".join(result.board),
@@ -48,6 +68,8 @@ class RunStore:
             "budget": result.budget,
             "cutoffs": list(result.cutoffs),
             "counts": list(run.counts),
+            "true_lines": true_lines,
+            "label": win_label(len(true_lines)),
             "winner": result.winner,
             "lines": sorted(result.lines),
             "candidates": list(result.candidates),
@@ -57,7 +79,7 @@ class RunStore:
         }
         return self._append(record, run.transpiled)
 
-    def save_calibration(self, profile, output, backend, known, variant: str = "player") -> str:
+    def save_calibration(self, profile, output, backend, known, variant: str = "player", tag: str | None = None) -> str:
         """Record a calibration: readout counts, known boards and the fitted profile.
 
         output is the job's output; its first counts are the 8 readout circuits,
@@ -66,6 +88,7 @@ class RunStore:
         num_lines = len(profile.readout)
         record = {
             "kind": "calibration",
+            "tag": tag,
             "variant": variant,
             "shots": sum(output.counts[0]),
             "readout_counts": [list(c) for c in output.counts[:num_lines]],
@@ -77,13 +100,13 @@ class RunStore:
         }
         return self._append(record, None)
 
-    def load(self, kind: str | None = None) -> list[dict]:
-        """Every saved record, oldest first; optionally only one kind ("detection" or "calibration")."""
+    def load(self, kind: str | None = None, tag: str | None = None) -> list[dict]:
+        """Every saved record, oldest first; optionally only one kind ("detection" or "calibration") or tag."""
         if not self.runs_file.exists():
             return []
         with self.runs_file.open(encoding="utf-8") as f:
             records = [json.loads(line) for line in f if line.strip()]
-        return [r for r in records if kind is None or r["kind"] == kind]
+        return [r for r in records if (kind is None or r["kind"] == kind) and (tag is None or r.get("tag") == tag)]
 
     def load_circuit(self, record: dict):
         """The transpiled circuit saved with a record, or None."""

@@ -34,6 +34,12 @@ def test_detection_is_saved_with_everything_needed(store):
     assert record["provenance"]["packages"]["qiskit"]
 
 
+def test_board_with_three_true_lines_is_saved(store):
+    detect_winner((X,) * 9, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
+    (record,) = store.load()
+    assert record["label"] == "multi_win" and len(record["true_lines"]) == 8
+
+
 def test_circuit_round_trips(store):
     result = detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
     (record,) = store.load()

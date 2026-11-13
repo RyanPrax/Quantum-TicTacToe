@@ -111,7 +111,7 @@ PROFILE_MODES = ("auto", "calibrate", "published", "ideal")
 def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="player", shots=DEFAULT_SHOTS,
                    budget=DEFAULT_BUDGET, backend: Backend | None = None,
                    profile: NoiseProfile | str = "auto",
-                   store: RunStore | str | os.PathLike | None = None) -> list[DetectionResult]:
+                   store: RunStore | str | os.PathLike | None = None, tag: str | None = None) -> list[DetectionResult]:
     """detect_winner for several (board, player) pairs, run as one job.
 
     profile sets the per-line cutoffs:
@@ -121,8 +121,8 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
       "published": the backend's published calibration data (no extra circuits).
       "ideal": no noise, the same cutoff on every line.
       or a NoiseProfile measured earlier on the same physical qubits.
-    Results are saved to store; runs on real hardware are always saved, to
-    results/ unless another store is given.
+    Results are saved to store, labeled with tag; runs on real hardware are
+    always saved, to results/ unless another store is given.
     """
     if backend is None:
         backend = IdealBackend()
@@ -173,9 +173,9 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
         store = RunStore()
     if store is not None:
         if not isinstance(store, RunStore): store = RunStore(store)
-        calibration_id = store.save_calibration(profile, out, backend, known, variant) if calibrating else None
+        calibration_id = store.save_calibration(profile, out, backend, known, variant, tag) if calibrating else None
         for result in results:
-            store.save_detection(result, backend, calibration_id)
+            store.save_detection(result, backend, calibration_id, tag)
     return results
 
 def detect_winner(board, variant="player", player=None, shots=DEFAULT_SHOTS, budget=DEFAULT_BUDGET,
