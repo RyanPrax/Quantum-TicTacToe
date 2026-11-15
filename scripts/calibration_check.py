@@ -91,11 +91,30 @@ def check(run):
               f" {high[line] / MAX_SHOTS:>11.3f} {miss_high:>11.1%}")
 
 
+def margins(run):
+    """Held-out misses and false flags at 1024 shots for each NO_WIN_MARGIN, per-bit on all 8 lines, budget 0.2."""
+    from qttt import noise
+
+    singles = [r for r in run["rows"] if len(r["winning_lines"]) == 1]
+    no_wins = [r for r in run["rows"] if not r["winning_lines"]]
+    first = {line: next(r for r in singles if r["winning_lines"] == [line]) for line in range(NUM_LINES)}
+    held_singles = [r for r in singles if r not in first.values()]
+    profile = calibrate(run, list(first.values()), no_wins[:2], per_bit=True)
+    default = noise.NO_WIN_MARGIN
+    print(f"  no-win margin (standard errors of the pooled no-win shots): misses / false flags at {SHOTS} shots")
+    for margin in (0.0, 0.5, 1.0, 1.5, 2.0):
+        noise.NO_WIN_MARGIN = margin
+        missed, flags = score(profile, SHOTS, 0.2, held_singles, no_wins[2:], run["shots"])
+        print(f"    {margin:>3}: {missed:>6.1%} / {flags:.3f}")
+    noise.NO_WIN_MARGIN = default
+
+
 def main(argv=None):
     paths = (argv if argv is not None else sys.argv[1:]) or ["results/noise_bias_boards.json"]
     for path in paths:
         for run in json.load(open(path)):
             check(run)
+            margins(run)
     return 0
 
 
