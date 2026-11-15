@@ -11,7 +11,7 @@ from qiskit_aer.primitives import SamplerV2 as AerSampler
 
 from qttt.backends import IBMBackend, IdealBackend, get_backend, line_qubits
 from qttt.board import O, X, boards_by_win_count, classical_winning_lines
-from qttt.detector import detect_winner
+from qttt.detector import DEFAULT_BUDGET, detect_winner
 from qttt.grover import build_search_circuit
 from qttt.noise import NoiseProfile, ideal_line_probabilities
 from qttt.results import RunStore
@@ -142,7 +142,7 @@ def test_detect_on_fake_backend_with_profile(berlin):
     result = detect_winner(TOP_ROW, player=X, shots=256, backend=berlin, profile=profile)
     assert result.lines <= {0}
     assert result.run.backend == "fake_berlin"
-    assert result.cutoffs == profile.cutoffs(256, 0.1)
+    assert result.cutoffs == profile.cutoffs(256, DEFAULT_BUDGET)
 
 
 def test_profile_from_other_qubits_is_refused_before_running(berlin, monkeypatch):
