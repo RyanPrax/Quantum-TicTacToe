@@ -476,3 +476,14 @@ def test_resume_refuses_another_backend(tmp_path):
         name = "other"
     with pytest.raises(ValueError, match="ran on ideal"):
         resume_job("job-1", Other(), store)
+
+
+def test_a_reused_profile_links_to_its_calibration(tmp_path):
+    store = RunStore(tmp_path)
+    (first,) = detect_winners([(TOP_ROW, X)], shots=256, backend=IdealBackend(seed=SEED), profile="calibrate",
+                              store=store)
+    (calibration,) = store.load("calibration")
+    assert first.profile.calibration_id == calibration["id"]
+    detect_winner(DOUBLE_WIN, player=X, shots=256, backend=IdealBackend(seed=SEED), profile=first.profile, store=store)
+    assert [d["calibration_id"] for d in store.load("detection")] == [calibration["id"]] * 2
+    assert store.load("calibration") == [calibration]  # reusing the profile runs no new calibration

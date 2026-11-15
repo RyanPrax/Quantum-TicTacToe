@@ -249,4 +249,5 @@ def _profile_summary(profile) -> dict | None:
         "epsilon": profile.epsilon,
         "readout": [list(row) for row in profile.readout],
         "line_qubits": None if profile.line_qubits is None else list(profile.line_qubits),
+        "calibration_id": profile.calibration_id,
     }

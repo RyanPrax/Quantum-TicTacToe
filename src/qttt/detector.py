@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 
 from qiskit import QuantumCircuit
@@ -192,7 +192,8 @@ def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike =
     saved = submitted["profile"]
     profile = None if saved is None else NoiseProfile(
         epsilon=saved["epsilon"], readout=tuple(tuple(row) for row in saved["readout"]), source=saved["source"],
-        line_qubits=None if saved["line_qubits"] is None else tuple(saved["line_qubits"]))
+        line_qubits=None if saved["line_qubits"] is None else tuple(saved["line_qubits"]),
+        calibration_id=saved.get("calibration_id"))
     return _finish(cases, variant, submitted["shots"], submitted["budget"], backend, out, circuits, transpiled,
                    len(extra), profile, known, line_qubits, store, submitted["tag"], submitted["id"])
 
@@ -225,9 +226,14 @@ def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, n
             line_qubits, store, tag, job_record) -> list[DetectionResult]:
     """Cutoffs, verdicts and saved records from a job's counts; profile None means fit it from the job."""
     runs = _search_runs(out.counts[num_extra:], out.job_id, shots, circuits, transpiled, backend)
-    calibrating = profile is None
-    if calibrating:
+    if profile is None:
         profile = profile_from_calibration(backend, out.counts, line_qubits, known)
+        if store is not None:
+            # A job resumed after a crash may already have saved its calibration.
+            saved = [r["id"] for r in store.load("calibration") if job_record and r.get("job_record") == job_record]
+            calibration_id = saved[-1] if saved else store.save_calibration(profile, out, backend, known, variant,
+                                                                            tag, job_record)
+            profile = replace(profile, calibration_id=calibration_id)
     cutoffs = profile.cutoffs(shots, budget)
 
     results = []
@@ -248,10 +254,8 @@ def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, n
         ))
 
     if store is not None:
-        calibration_id = (store.save_calibration(profile, out, backend, known, variant, tag, job_record)
-                          if calibrating else None)
         for result in results:
-            store.save_detection(result, backend, calibration_id, tag, job_record)
+            store.save_detection(result, backend, profile.calibration_id, tag, job_record)
     return results
 
 def detect_winner(board, variant="player", player=None, shots=DEFAULT_SHOTS, budget=DEFAULT_BUDGET,

@@ -194,3 +194,15 @@ def test_verify_games_needs_one_variant():
     b.play(2)
     with pytest.raises(ValueError, match="same variant"):
         verify_games([a, b], IdealBackend())
+
+
+def test_every_turn_links_to_the_games_calibration(tmp_path):
+    from qttt.results import RunStore
+
+    store = RunStore(tmp_path)
+    game = Game(backend=IdealBackend(seed=SEED), shots=256, profile="calibrate", store=store)
+    _play(game, [0, 1, 2, 4, 3, 5, 7])  # no winner yet; checks on turns 5, 6 and 7
+    (calibration,) = store.load("calibration")  # calibrated once, on turn 5
+    detections = store.load("detection")
+    assert len(detections) == 3
+    assert {d["calibration_id"] for d in detections} == {calibration["id"]}

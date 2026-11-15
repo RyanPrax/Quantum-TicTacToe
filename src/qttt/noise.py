@@ -83,6 +83,8 @@ class NoiseProfile:
     source: str
     line_qubits: tuple[int, ...] | None = None  # physical qubits the readout matrix belongs to
     log10_esp: float | None = field(default=None, compare=False)
+    # The saved calibration record this profile was fitted from, so every run that reuses it links back to it.
+    calibration_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self):
         if not 0 <= self.epsilon <= 1:
