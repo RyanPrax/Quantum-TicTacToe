@@ -35,6 +35,7 @@ from qttt.stats import NUM_LINES
 
 LINE_REGISTER = "line_cl"
 ANCILLA_SETTINGS = ("auto", True, False)
+ACCOUNT_PREFIX = "QISKIT_IBM_"  # the only .env keys read
 ANCILLA_FLAGS = {"auto": "auto", "on": True, "off": False}  # command-line spelling of each setting
 DEFAULT_TRANSPILE_SEEDS = 5  # for the command-line tools; enough to find a good layout on IBM devices
 
@@ -359,20 +360,22 @@ def _runtime_service(instance=None):
     """IBM account from QISKIT_IBM_TOKEN (environment or .env) if set, otherwise the saved account."""
     from qiskit_ibm_runtime import QiskitRuntimeService
 
-    load_dotenv()
-    instance = instance or os.environ.get("QISKIT_IBM_INSTANCE") or None
-    token = os.environ.get("QISKIT_IBM_TOKEN")
+    # The real environment wins over .env.
+    settings = {**read_dotenv(), **{k: v for k, v in os.environ.items() if k.startswith(ACCOUNT_PREFIX)}}
+    instance = instance or settings.get("QISKIT_IBM_INSTANCE") or None
+    token = settings.get("QISKIT_IBM_TOKEN")
     if token:
         return QiskitRuntimeService(channel="ibm_quantum_platform", token=token, instance=instance)
     return QiskitRuntimeService(instance=instance)
 
 
-def load_dotenv(start: str | os.PathLike | None = None) -> Path | None:
-    """Read KEY=value lines from the nearest .env (start directory, then its parents) into os.environ.
+def read_dotenv(start: str | os.PathLike | None = None) -> dict[str, str]:
+    """The QISKIT_IBM_* settings in the nearest .env (start directory, then its parents).
 
-    Variables that are already set are left alone, so the real environment wins.
-    Blank lines and # comments are skipped; values may be quoted. Returns the
-    file used, or None. Nothing read here is printed or logged.
+    Only keys starting with ACCOUNT_PREFIX are read, and nothing is written to
+    os.environ, so other secrets in the file never reach this process's
+    environment. Blank lines and # comments are skipped; values may be quoted.
+    Nothing read here is printed or logged.
     """
     directory = Path(start or Path.cwd()).resolve()
     for folder in (directory, *directory.parents):
@@ -380,18 +383,21 @@ def load_dotenv(start: str | os.PathLike | None = None) -> Path | None:
         if path.is_file():
             break
     else:
-        return None
+        return {}
+    settings = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.removeprefix("export ").strip()
+        if not key.startswith(ACCOUNT_PREFIX):
+            continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
             value = value[1:-1]
-        os.environ.setdefault(key, value)
-    return path
+        settings[key] = value
+    return settings
 
 
 def two_qubit_count(tqc: QuantumCircuit) -> int:

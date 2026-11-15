@@ -173,34 +173,30 @@ def test_hardware_path_runs_locally_and_always_saves(tmp_path, monkeypatch):
     assert result.profile.source == "calibration:fake_berlin"
 
 
-def test_load_dotenv_reads_nearest_file_without_overriding(tmp_path, monkeypatch):
-    from qttt.backends import load_dotenv
+def test_read_dotenv_reads_only_account_keys_from_nearest_file(tmp_path, monkeypatch):
+    from qttt.backends import read_dotenv
 
     (tmp_path / ".env").write_text(
-        "# comment\n\nexport QTTT_A='quoted value'\nQTTT_B=plain=with=equals\nQTTT_C=from-file\nnot a line\n"
+        "# comment\n\nexport QISKIT_IBM_TOKEN='quoted value'\nQISKIT_IBM_INSTANCE=crn:with=equals\n"
+        "OTHER_SECRET=never-read\nnot a line\n"
     )
     child = tmp_path / "notebooks"
     child.mkdir()
-    monkeypatch.setenv("QTTT_C", "from-environment")
-    for key in ("QTTT_A", "QTTT_B"):
-        monkeypatch.delenv(key, raising=False)
-    assert load_dotenv(child) == tmp_path / ".env"
+    monkeypatch.delenv("OTHER_SECRET", raising=False)
+    assert read_dotenv(child) == {"QISKIT_IBM_TOKEN": "quoted value", "QISKIT_IBM_INSTANCE": "crn:with=equals"}
     import os
-    assert os.environ["QTTT_A"] == "quoted value"
-    assert os.environ["QTTT_B"] == "plain=with=equals"
-    assert os.environ["QTTT_C"] == "from-environment"  # the real environment wins
+    assert "OTHER_SECRET" not in os.environ  # nothing is written to the environment
 
 
-def test_load_dotenv_without_file(tmp_path):
-    from qttt.backends import load_dotenv
-
-    assert load_dotenv(tmp_path) is None or load_dotenv(tmp_path).parent != tmp_path
-
-
-def test_runtime_service_reads_token_from_dotenv(tmp_path, monkeypatch):
-    import qiskit_ibm_runtime
-
+def test_read_dotenv_without_file(tmp_path, monkeypatch):
     from qttt import backends
+
+    monkeypatch.setattr(backends.Path, "is_file", lambda self: False)  # no .env anywhere up the tree
+    assert backends.read_dotenv(tmp_path) == {}
+
+
+def _fake_service(monkeypatch):
+    import qiskit_ibm_runtime
 
     seen = {}
 
@@ -209,27 +205,39 @@ def test_runtime_service_reads_token_from_dotenv(tmp_path, monkeypatch):
             seen.update(kwargs)
 
     monkeypatch.setattr(qiskit_ibm_runtime, "QiskitRuntimeService", FakeService)
+    return seen
+
+
+def test_runtime_service_reads_token_from_dotenv(tmp_path, monkeypatch):
+    from qttt import backends
+
+    seen = _fake_service(monkeypatch)
     monkeypatch.delenv("QISKIT_IBM_TOKEN", raising=False)
     monkeypatch.delenv("QISKIT_IBM_INSTANCE", raising=False)
     (tmp_path / ".env").write_text("QISKIT_IBM_TOKEN=token-from-dotenv\nQISKIT_IBM_INSTANCE=\n")
     monkeypatch.chdir(tmp_path)
     backends._runtime_service()
     assert seen == {"channel": "ibm_quantum_platform", "token": "token-from-dotenv", "instance": None}
+    import os
+    assert "QISKIT_IBM_TOKEN" not in os.environ  # the token never leaks into later tests
+
+
+def test_runtime_service_prefers_the_environment(tmp_path, monkeypatch):
+    from qttt import backends
+
+    seen = _fake_service(monkeypatch)
+    (tmp_path / ".env").write_text("QISKIT_IBM_TOKEN=token-from-dotenv\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QISKIT_IBM_TOKEN", "token-from-environment")
+    backends._runtime_service()
+    assert seen["token"] == "token-from-environment"
 
 
 def test_runtime_service_reads_token_from_environment(monkeypatch):
-    import qiskit_ibm_runtime
-
     from qttt import backends
 
-    seen = {}
-
-    class FakeService:
-        def __init__(self, **kwargs):
-            seen.update(kwargs)
-
-    monkeypatch.setattr(qiskit_ibm_runtime, "QiskitRuntimeService", FakeService)
-    monkeypatch.setattr(backends, "load_dotenv", lambda: None)  # ignore any real .env
+    seen = _fake_service(monkeypatch)
+    monkeypatch.setattr(backends, "read_dotenv", lambda: {})  # ignore any real .env
     monkeypatch.setenv("QISKIT_IBM_TOKEN", "not-a-real-token")
     monkeypatch.setenv("QISKIT_IBM_INSTANCE", "my-instance")
     backends._runtime_service()
