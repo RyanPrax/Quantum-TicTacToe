@@ -23,7 +23,8 @@ from pathlib import Path
 
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.circuit import CircuitInstruction
-from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.transpiler import PassManager, generate_preset_pass_manager
+from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDelay
 from qiskit_aer import AerSimulator
 from qiskit_aer.primitives import SamplerV2 as AerSampler
 
@@ -226,14 +227,19 @@ class IBMBackend(Backend):
     Fake backends (snapshots of real devices) run on Aer with the device's
     noise model; real devices run through IBM's runtime Sampler. The
     transpiler is tried with `transpile_seeds` seeds and the circuit with the
-    highest ESP is kept; later circuits with the same number of qubits reuse
-    that layout so they read out on the same physical qubits.
+    best score is kept.
+
+    With schedule (default), simulated runs first pad every qubit's idle time
+    with delays (ALAP scheduling), so the noise model's T1/T2 decay also acts
+    while qubits wait, as it does on the device. Real devices time circuits
+    themselves, so it has no effect there.
     """
 
     provider = "ibm"
 
     def __init__(self, backend, *, seed: int | None = None, transpile_seeds: int = 1,
-                 sampler_options: dict | None = None, simulate: bool | None = None, ancilla: bool | str = "auto"):
+                 sampler_options: dict | None = None, simulate: bool | None = None, ancilla: bool | str = "auto",
+                 schedule: bool = True):
         from qiskit_ibm_runtime.fake_provider.fake_backend import FakeBackendV2
 
         if transpile_seeds < 1:
@@ -245,6 +251,7 @@ class IBMBackend(Backend):
         self.seed = seed
         self.transpile_seeds = transpile_seeds
         self.sampler_options = dict(sampler_options or {})
+        self.schedule = schedule
 
     def transpile(self, circuit):
         base = self.seed or 0
@@ -273,6 +280,9 @@ class IBMBackend(Backend):
     def _sample(self, circuits, shots, on_submit):
         if self.simulated:
             on_submit(None)
+            if self.schedule:
+                target = self.backend.target
+                circuits = PassManager([ALAPScheduleAnalysis(target=target), PadDelay(target=target)]).run(list(circuits))
             sampler = AerSampler.from_backend(self.backend, seed=self.seed)
             result = sampler.run(list(circuits), shots=shots).result()
             return [_line_counts(r) for r in result], None
@@ -324,7 +334,7 @@ class IBMBackend(Backend):
 
     def options(self):
         return {"seed": self.seed, "transpile_seeds": self.transpile_seeds,
-                "sampler_options": self.sampler_options, "ancilla": self.ancilla}
+                "sampler_options": self.sampler_options, "ancilla": self.ancilla, "schedule": self.schedule}
 
 
 def get_backend(name: str, *, seed: int | None = None, transpile_seeds: int = 1,

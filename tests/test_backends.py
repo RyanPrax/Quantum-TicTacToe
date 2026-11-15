@@ -249,3 +249,20 @@ def test_board_gates_are_translated_for_old_devices():
                if inst.operation.name not in ("barrier", "measure"))
     counts = AerSampler(seed=SEED).run([circuit], shots=4000).result()[0].data.line_cl.get_counts()
     assert counts["000"] / 4000 == pytest.approx(25 / 32, abs=0.04)
+
+
+@pytest.mark.parametrize("schedule", [True, False])
+def test_simulated_runs_pad_idle_time_with_delays(berlin, monkeypatch, schedule):
+    seen = []
+
+    class Recorder:
+        def run(self, circuits, shots):
+            seen.extend(circuits)
+            raise StopIteration
+
+    monkeypatch.setattr("qttt.backends.AerSampler.from_backend", lambda *a, **k: Recorder())
+    backend = IBMBackend(berlin.backend, seed=SEED, schedule=schedule)
+    with pytest.raises(StopIteration):
+        backend.run([backend.search_circuit("player", TOP_ROW, X)], shots=8)
+    assert ("delay" in seen[0].count_ops()) == schedule
+    assert backend.options()["schedule"] is schedule
