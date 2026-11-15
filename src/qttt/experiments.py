@@ -34,16 +34,21 @@ class LabeledBoard:
         return LABELS[len(self.lines)]
 
 
-def sample_boards(n: int, seed: int | None = None, mix: str | Mapping[str, int] = "balanced") -> list[LabeledBoard]:
+def sample_boards(n: int | None = None, seed: int | None = None,
+                  mix: str | Mapping[str, int] = "balanced") -> list[LabeledBoard]:
     """Draw n labeled boards.
 
     mix is "balanced" (as equal a split of no win / single win / double win as
     n allows), "natural" (in proportion to how often each occurs: 3,446 / 920 /
-    22), or a mapping of label to count, e.g. {"single_win": 10, "double_win": 5}.
+    22), or a mapping of label to count, e.g. {"single_win": 10, "double_win": 5},
+    which sets n itself (pass n only if it matches the total).
     Within a label boards are distinct until that label runs out (there are
     only 22 double wins), then repeat. The order is shuffled.
     """
-    if n < 1 and not isinstance(mix, Mapping):
+    if isinstance(mix, Mapping):
+        if n is not None and n != sum(mix.values()):
+            raise ValueError(f"n is {n} but mix adds up to {sum(mix.values())}; pass one or make them match")
+    elif n is None or n < 1:
         raise ValueError(f"n must be at least 1, got {n}")
     rng = random.Random(seed)
     groups = boards_by_win_count()
@@ -70,6 +75,10 @@ def collect(boards: Sequence[LabeledBoard], backend: Backend, variant: str = "pl
     boards_per_job boards (default: all of them). Results are saved to store
     (default results/) under tag (default: a timestamp).
     """
+    if boards_per_job is not None and boards_per_job < 1:
+        raise ValueError(f"boards_per_job must be at least 1, got {boards_per_job}")
+    if not boards:
+        return []
     if store is None:
         store = RunStore()
     if tag is None:

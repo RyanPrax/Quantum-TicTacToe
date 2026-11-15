@@ -35,7 +35,7 @@ def test_natural_mix_follows_frequencies():
 
 
 def test_explicit_mix_and_repeats_after_the_pool_runs_out():
-    boards = sample_boards(0, seed=SEED, mix={"double_win": 30})
+    boards = sample_boards(seed=SEED, mix={"double_win": 30})
     assert len(boards) == 30
     assert len({b.board for b in boards}) == 22  # only 22 double wins exist
 
@@ -101,3 +101,16 @@ def test_collect_script_compile_flags(tmp_path, capsys):
     (record,) = RunStore(tmp_path).load("detection")
     assert record["metrics"]["ancilla"] is True
     assert record["backend"]["options"]["ancilla"] is True
+
+
+def test_mix_mapping_must_match_n():
+    assert len(sample_boards(3, seed=SEED, mix={"single_win": 3})) == 3
+    with pytest.raises(ValueError, match="adds up to 3"):
+        sample_boards(5, seed=SEED, mix={"single_win": 3})
+
+
+def test_collect_nothing(tmp_path):
+    assert collect([], IdealBackend(seed=SEED), store=RunStore(tmp_path)) == []
+    assert not (tmp_path / "runs.jsonl").exists()
+    with pytest.raises(ValueError, match="boards_per_job"):
+        collect(sample_boards(1, seed=SEED), IdealBackend(seed=SEED), store=RunStore(tmp_path), boards_per_job=0)
