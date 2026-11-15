@@ -12,7 +12,7 @@ import random
 import warnings
 from collections.abc import Callable
 
-from qttt.backends import get_backend
+from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, get_backend
 from qttt.board import EMPTY, LINE_NAMES, O, X
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS
 from qttt.game import STRATEGIES, Game, TurnCheck, Verification, computer_move, verify_games
@@ -39,6 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
                         help=f"expected wasted checks per round (default {DEFAULT_BUDGET})")
     parser.add_argument("--seed", type=int, default=None, help="seed for the simulator and the computer player")
+    parser.add_argument("--transpile-seeds", type=int, default=DEFAULT_TRANSPILE_SEEDS,
+                        help=f"compiler seeds tried on IBM devices, best kept (default {DEFAULT_TRANSPILE_SEEDS})")
+    parser.add_argument("--ancilla", choices=ANCILLA_FLAGS, default="auto",
+                        help="extra qubit for a cheaper oracle: auto keeps the better compiled circuit (default)")
     parser.add_argument("--computer", choices=(X, O), default=None,
                         help="let the computer play X or O (default: two players at one keyboard)")
     parser.add_argument("--strategy", choices=STRATEGIES, default="rules",
@@ -47,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="save every check to DIR (default results/); real hardware runs are always saved")
     parser.add_argument("--yes", action="store_true", help="do not ask before sending a job to real hardware")
     return parser
+
+
+def _backend(name: str, args):
+    return get_backend(name, seed=args.seed, transpile_seeds=args.transpile_seeds, ancilla=ANCILLA_FLAGS[args.ancilla])
 
 
 def is_real_device(name: str) -> bool:
@@ -73,6 +81,9 @@ def main(argv: list[str] | None = None, *, read: Callable[[str], str] = input,
     if not 0 < args.budget <= 8:
         write("--budget must be in (0, 8].")
         return 2
+    if args.transpile_seeds < 1:
+        write("--transpile-seeds must be at least 1.")
+        return 2
     if args.games < 1:
         write("--games must be at least 1.")
         return 2
@@ -86,7 +97,7 @@ def main(argv: list[str] | None = None, *, read: Callable[[str], str] = input,
               f"then verifying every board on {verify_name} in one job.")
 
     store = RunStore(args.save) if args.save else None
-    play_backend = get_backend(play_name, seed=args.seed)
+    play_backend = _backend(play_name, args)
     rng = random.Random(args.seed)
     write(f"Quantum tic-tac-toe: {args.variant} oracle on {play_backend.name}, {args.shots} shots per check.")
     write("Enter a cell number 0-8 to move, q to quit.\n")
@@ -152,7 +163,7 @@ def verify(games: list[Game], name: str, args, store, read, write) -> int:
             write("Not sent.")
             return 1
     write(f"Verifying {checks} board(s) on {name} in one job...")
-    backend = get_backend(name, seed=args.seed)
+    backend = _backend(name, args)
     verifications = verify_games(games, backend, shots=args.shots, budget=args.budget, store=store)
     write(render_verification(verifications, len(games) > 1))
     return 0

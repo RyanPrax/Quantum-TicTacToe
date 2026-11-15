@@ -59,7 +59,7 @@ def test_computer_opponent():
 
 
 def test_missed_win_is_reported(monkeypatch):
-    monkeypatch.setattr(cli, "get_backend", lambda name, seed=None: _NoSignalBackend(seed=seed))
+    monkeypatch.setattr(cli, "get_backend", lambda name, seed=None, **kwargs: _NoSignalBackend(seed=seed))
     code, out = _run(["--shots", "256"], ["0", "3", "1", "4", "2"])
     assert code == 0
     assert "MISSED: X has [0]" in out
@@ -83,7 +83,7 @@ def test_verify_after_two_games(tmp_path):
 def test_real_device_plays_on_its_snapshot_and_asks_before_sending(monkeypatch):
     names = []
 
-    def fake_get_backend(name, seed=None):
+    def fake_get_backend(name, seed=None, **kwargs):
         names.append(name)
         return IdealBackend(seed=seed)
 
@@ -115,3 +115,29 @@ def test_fake_twin():
 
 def test_render_board_numbers_empty_cells():
     assert cli.render_board(["X", " ", "O", " ", " ", " ", " ", " ", " "]).startswith(" X | 1 | O")
+
+
+@pytest.mark.parametrize("flag, setting", [("auto", "auto"), ("on", True), ("off", False)])
+def test_compile_flags_reach_the_backend(monkeypatch, flag, setting):
+    seen = []
+
+    def fake_get_backend(name, seed=None, **kwargs):
+        seen.append(kwargs)
+        return IdealBackend(seed=seed)
+
+    monkeypatch.setattr(cli, "get_backend", fake_get_backend)
+    code, _ = _run(["--transpile-seeds", "3", "--ancilla", flag], ["q"])
+    assert code == 0
+    assert seen == [{"transpile_seeds": 3, "ancilla": setting}]
+
+
+def test_default_transpile_seeds(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "get_backend", lambda name, seed=None, **kwargs: seen.append(kwargs) or IdealBackend())
+    _run([], ["q"])
+    assert seen == [{"transpile_seeds": 5, "ancilla": "auto"}]
+
+
+def test_bad_transpile_seeds_are_refused():
+    code, out = _run(["--transpile-seeds", "0"], [])
+    assert code == 2 and "--transpile-seeds" in out

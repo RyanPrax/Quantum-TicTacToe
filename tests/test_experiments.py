@@ -90,3 +90,14 @@ def test_collect_script(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "3 boards" in out and "Saved 3 results" in out
     assert len(RunStore(tmp_path).load("detection", tag="cli")) == 3
+
+
+def test_collect_script_compile_flags(tmp_path, capsys):
+    path = Path(__file__).resolve().parent.parent / "scripts" / "collect.py"
+    spec = importlib.util.spec_from_file_location("collect_script", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    assert script.main(["--n", "1", "--seed", "1", "--shots", "64", "--store", str(tmp_path), "--ancilla", "on"]) == 0
+    (record,) = RunStore(tmp_path).load("detection")
+    assert record["metrics"]["ancilla"] is True
+    assert record["backend"]["options"]["ancilla"] is True

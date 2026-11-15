@@ -34,6 +34,8 @@ from qttt.stats import NUM_LINES
 
 LINE_REGISTER = "line_cl"
 ANCILLA_SETTINGS = ("auto", True, False)
+ANCILLA_FLAGS = {"auto": "auto", "on": True, "off": False}  # command-line spelling of each setting
+DEFAULT_TRANSPILE_SEEDS = 5  # for the command-line tools; enough to find a good layout on IBM devices
 
 
 @dataclass(frozen=True)

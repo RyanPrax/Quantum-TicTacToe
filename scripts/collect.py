@@ -12,7 +12,7 @@ the same job. Real hardware asks for confirmation first.
 import argparse
 import sys
 
-from qttt.backends import get_backend
+from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, get_backend
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS
 from qttt.experiments import MIXES, collect, sample_boards, summarize
 from qttt.grover import VARIANTS
@@ -28,6 +28,10 @@ def main(argv=None, read=input):
     parser.add_argument("--mix", choices=MIXES, default="balanced",
                         help="balanced split of no win / single / double (default) or their natural frequencies")
     parser.add_argument("--variant", choices=VARIANTS, default="player")
+    parser.add_argument("--transpile-seeds", type=int, default=DEFAULT_TRANSPILE_SEEDS,
+                        help=f"compiler seeds tried on IBM devices, best kept (default {DEFAULT_TRANSPILE_SEEDS})")
+    parser.add_argument("--ancilla", choices=ANCILLA_FLAGS, default="auto",
+                        help="extra qubit for a cheaper oracle: auto keeps the better compiled circuit (default)")
     parser.add_argument("--shots", type=int, default=DEFAULT_SHOTS)
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET)
     parser.add_argument("--boards-per-job", type=int, default=None,
@@ -38,7 +42,8 @@ def main(argv=None, read=input):
     args = parser.parse_args(argv)
 
     boards = sample_boards(args.n, seed=args.seed, mix=args.mix)
-    backend = get_backend(args.backend, seed=args.seed)
+    backend = get_backend(args.backend, seed=args.seed, transpile_seeds=args.transpile_seeds,
+                          ancilla=ANCILLA_FLAGS[args.ancilla])
     jobs = -(-len(boards) // (args.boards_per_job or len(boards)))
     calibration = 0 if args.backend == "ideal" else (NUM_LINES + 1) * jobs
     circuits = len(boards) + calibration
