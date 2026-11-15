@@ -9,7 +9,6 @@ from qiskit import QuantumCircuit
 
 from qttt.backends import Backend, CircuitMetrics, IdealBackend, JobOutput, line_qubits
 from qttt.board import EMPTY, WIN_LINES
-from qttt.grover import build_search_circuit
 from qttt.noise import DEFAULT_KNOWN, NoiseProfile, calibration_circuits, profile_from_calibration
 from qttt.results import RunStore
 from qttt.stats import NUM_LINES, _binomial_log_pmf, _binomial_tail, binomial_cutoff  # noqa: F401 (re-exported)
@@ -72,7 +71,7 @@ def run_searches(cases: Sequence[tuple[Sequence[str], str | None]], variant="pla
     return _search_runs(out.counts, out.job_id, shots, circuits, transpiled, backend)
 
 def _search_circuits(cases, variant, backend):
-    circuits = [build_search_circuit(variant, board, player) for board, player in cases]
+    circuits = [backend.logical_search_circuit(variant, board, player) for board, player in cases]
     transpiled = [backend.search_circuit(variant, board, player) for board, player in cases]
     return circuits, transpiled
 
@@ -260,7 +259,7 @@ def detect_winner(board, variant="player", player=None, shots=DEFAULT_SHOTS, bud
     """Detect whether anyone has won, using one Grover search plus classical checks.
 
     Lines measured at least their cutoff are checked on the board; any line
-    reported in the result is a real winning line. The default 13-qubit
+    reported in the result is a real winning line. The default 12-qubit
     "player" variant needs player, the one who just moved; the legacy 22-qubit
     "full" variant checks both players and ignores it. backend defaults to the
     ideal simulator; see detect_winners for profile and store.

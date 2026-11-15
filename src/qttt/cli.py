@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="after the games, re-check every board on this backend in one job (e.g. ibm_kingston)")
     parser.add_argument("--games", type=int, default=1, help="games to play before verifying (default 1)")
     parser.add_argument("--variant", choices=VARIANTS, default="player",
-                        help="13-qubit player oracle (default) or the legacy 22-qubit full oracle")
+                        help="12-qubit player oracle (default) or the legacy 22-qubit full oracle")
     parser.add_argument("--shots", type=int, default=DEFAULT_SHOTS, help=f"shots per check (default {DEFAULT_SHOTS})")
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
                         help=f"expected wasted checks per round (default {DEFAULT_BUDGET})")

@@ -6,9 +6,9 @@ from qiskit import QuantumCircuit
 from qiskit.circuit import ClassicalRegister, QuantumRegister
 
 from qttt.encoding import encode_full_board, encode_player_board
-from qttt.oracles import full_oracle, player_oracle
+from qttt.oracles import full_oracle, mcz, player_oracle
 
-# "player" (13 qubits) is the main version; "full" (22 qubits) is the legacy class version.
+# "player" (12 qubits) is the main version; "full" (22 qubits) is the legacy class version.
 VARIANTS = ("full", "player")
 
 
@@ -20,10 +20,7 @@ def diffuser(qc: QuantumCircuit, qubits: QuantumRegister) -> None:
     qc.h(qubits)
     qc.x(qubits)
     if n > 1:
-        # Multi-controlled Z, built from an MCX targeting the last qubit.
-        qc.h(qubits[-1])
-        qc.mcx(qubits[:-1], qubits[-1])
-        qc.h(qubits[-1])
+        mcz(qc, list(qubits))
     else:
         qc.z(qubits[0])
     qc.x(qubits)
@@ -56,39 +53,45 @@ def build_search_circuit(
     variant: str,
     board: Sequence[str],
     player: str | None = None,
+    ancilla: bool = False,
 ) -> QuantumCircuit:
     """Build a one-iteration Grover search over the 8 winning lines for the given board.
 
-    Registers are named "board", "line" and "phase", and the line register is
-    measured into a classical register named "line_cl". The "player" variant
-    (13 qubits) checks only the given player, who must be the one who just moved.
-    The legacy "full" variant (22 qubits, the class version) checks both
-    players, so it ignores player.
+    The line register is named "line" and is measured into a classical register
+    named "line_cl"; the board register "board" comes first. The "player" variant
+    (12 qubits) checks only the given player, who must be the one who just moved;
+    ancilla=True adds a 13th qubit, "ancilla", that lets each oracle gate be
+    built with fewer two-qubit gates. The legacy "full" variant (22 qubits, the
+    class version) checks both players with a "phase" qubit, so it ignores player.
     """
+    if ancilla and variant == "full":
+        raise ValueError("ancilla is only available for the player variant")
     board_reg = QuantumRegister(board_qubit_count(variant), name="board")
     line_reg = QuantumRegister(3, name="line")
-    phase_reg = QuantumRegister(1, name="phase")
     line_cl = ClassicalRegister(3, name="line_cl")
-    qc = QuantumCircuit(board_reg, line_reg, phase_reg, line_cl, name=f"grover_{variant}")
 
     if variant == "full":
+        phase_reg = QuantumRegister(1, name="phase")
+        qc = QuantumCircuit(board_reg, line_reg, phase_reg, line_cl, name="grover_full")
         encode_full_board(qc, board_reg, board)
+        # Phase qubit in |-> for phase kickback.
+        qc.x(phase_reg[0])
+        qc.h(phase_reg[0])
     else:
+        ancilla_reg = [QuantumRegister(1, name="ancilla")] if ancilla else []
+        qc = QuantumCircuit(board_reg, line_reg, *ancilla_reg, line_cl, name="grover_player")
         encode_player_board(qc, board_reg, board, player)
-
-    # Phase qubit in |-> for phase kickback; line register in uniform superposition.
-    qc.x(phase_reg[0])
-    qc.h(phase_reg[0])
     qc.h(line_reg)
     qc.barrier(label="Setup")
 
     if variant == "full":
         full_oracle(qc, board_reg, line_reg, phase_reg[0])
     else:
-        player_oracle(qc, board_reg, line_reg, phase_reg[0])
+        player_oracle(qc, board_reg, line_reg, ancilla_reg[0][0] if ancilla else None)
     qc.barrier(label="Oracle")
     diffuser(qc, line_reg)
     qc.barrier(label="Diffuser")
 
     qc.measure(line_reg, line_cl)
+    qc.metadata = {"ancilla": ancilla}
     return qc

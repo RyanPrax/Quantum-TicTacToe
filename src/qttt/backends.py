@@ -33,6 +33,7 @@ from qttt.grover import board_flips, build_search_circuit
 from qttt.stats import NUM_LINES
 
 LINE_REGISTER = "line_cl"
+ANCILLA_SETTINGS = ("auto", True, False)
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class CircuitMetrics:
     log10_esp: float | None  # None when the backend publishes no gate errors
     line_qubits: tuple[int, ...]  # physical qubit measured into line_cl[0], [1], [2]
     transpile_seed: int | None
+    ancilla: bool = False  # the player search circuit's extra qubit (see Backend)
 
 
 @dataclass(frozen=True)
@@ -60,14 +62,35 @@ class Backend(ABC):
     its board qubits start. Every board gets the same routed circuit, so gate
     counts, ESP and the measured line qubits are the same for all boards, and
     the compiler never sees the board.
+
+    ancilla sets whether the player variant's search circuit gets one extra
+    qubit that makes each oracle gate cheaper (see qttt.oracles.mcz). Whether
+    that pays off depends on the device, so "auto" (the default) compiles both
+    and keeps the better score (see score()); True or False forces one. The
+    legacy full variant never uses it.
     """
 
     name: str
     provider: str
     simulated: bool
 
-    def __init__(self):
+    def __init__(self, ancilla: bool | str = "auto"):
+        if ancilla not in ANCILLA_SETTINGS:
+            raise ValueError(f"ancilla must be one of {ANCILLA_SETTINGS}, got {ancilla!r}")
+        self.ancilla = ancilla
         self._templates: dict[str, QuantumCircuit] = {}
+
+    def uses_ancilla(self, variant: str) -> bool:
+        """Whether this variant's search circuit has the ancilla qubit (with "auto", compiles both to decide)."""
+        if variant != "player":
+            return False
+        if self.ancilla == "auto":
+            return self.search_template(variant).metadata["ancilla"]
+        return self.ancilla
+
+    def logical_search_circuit(self, variant: str, board: Sequence[str], player: str | None = None) -> QuantumCircuit:
+        """The search circuit for a board before transpiling, with or without the ancilla as this backend uses it."""
+        return build_search_circuit(variant, board, player, ancilla=self.uses_ancilla(variant))
 
     @abstractmethod
     def transpile(self, circuit: QuantumCircuit) -> QuantumCircuit:
@@ -77,8 +100,20 @@ class Backend(ABC):
         """The transpiled search circuit for an empty board."""
         if variant not in self._templates:
             player = X if variant == "player" else None
-            self._templates[variant] = self.transpile(build_search_circuit(variant, [EMPTY] * 9, player))
+            if variant != "player":
+                choices = (False,)
+            else:
+                choices = (False, True) if self.ancilla == "auto" else (self.ancilla,)
+            # Ties keep the first choice, the circuit without the ancilla.
+            self._templates[variant] = max(
+                (self.transpile(build_search_circuit(variant, [EMPTY] * 9, player, ancilla=a)) for a in choices),
+                key=self.score)
         return self._templates[variant]
+
+    def score(self, tqc: QuantumCircuit) -> tuple[float, int]:
+        """How good a transpiled circuit is, higher is better: its ESP, then fewer two-qubit gates."""
+        esp = self.gate_log10_esp(tqc)
+        return (esp if esp is not None else 0.0, -two_qubit_count(tqc))
 
     def set_search_template(self, variant: str, tqc: QuantumCircuit) -> None:
         """Use a template transpiled earlier (for example one saved in a RunStore) instead of transpiling."""
@@ -153,6 +188,7 @@ class Backend(ABC):
             log10_esp=self.gate_log10_esp(tqc),
             line_qubits=line_qubits(tqc),
             transpile_seed=tqc.metadata.get("transpile_seed"),
+            ancilla=tqc.metadata.get("ancilla", False),
         )
 
 
@@ -163,8 +199,8 @@ class IdealBackend(Backend):
     provider = "aer"
     simulated = True
 
-    def __init__(self, seed: int | None = None):
-        super().__init__()
+    def __init__(self, seed: int | None = None, ancilla: bool | str = "auto"):
+        super().__init__(ancilla)
         self.seed = seed
         self._simulator = AerSimulator()
 
@@ -179,7 +215,7 @@ class IdealBackend(Backend):
         return [_line_counts(r) for r in result], None
 
     def options(self):
-        return {"seed": self.seed}
+        return {"seed": self.seed, "ancilla": self.ancilla}
 
 
 class IBMBackend(Backend):
@@ -195,12 +231,12 @@ class IBMBackend(Backend):
     provider = "ibm"
 
     def __init__(self, backend, *, seed: int | None = None, transpile_seeds: int = 1,
-                 sampler_options: dict | None = None, simulate: bool | None = None):
+                 sampler_options: dict | None = None, simulate: bool | None = None, ancilla: bool | str = "auto"):
         from qiskit_ibm_runtime.fake_provider.fake_backend import FakeBackendV2
 
         if transpile_seeds < 1:
             raise ValueError(f"transpile_seeds must be at least 1, got {transpile_seeds}")
-        super().__init__()
+        super().__init__(ancilla)
         self.backend = backend
         self.name = backend.name
         self.simulated = isinstance(backend, FakeBackendV2) if simulate is None else simulate
@@ -215,8 +251,7 @@ class IBMBackend(Backend):
             pm = generate_preset_pass_manager(optimization_level=3, backend=self.backend,
                                               seed_transpiler=s, qubits_initially_zero=False)
             tqc = pm.run(circuit)
-            esp = self.gate_log10_esp(tqc)
-            score = (esp if esp is not None else 0.0, -two_qubit_count(tqc))
+            score = self.score(tqc)
             if best_score is None or score > best_score:
                 best, best_score = tqc, score
                 best.metadata = {**(circuit.metadata or {}), "transpile_seed": s}
@@ -287,14 +322,14 @@ class IBMBackend(Backend):
 
     def options(self):
         return {"seed": self.seed, "transpile_seeds": self.transpile_seeds,
-                "sampler_options": self.sampler_options}
+                "sampler_options": self.sampler_options, "ancilla": self.ancilla}
 
 
 def get_backend(name: str, *, seed: int | None = None, transpile_seeds: int = 1,
-                sampler_options: dict | None = None, instance: str | None = None) -> Backend:
+                sampler_options: dict | None = None, instance: str | None = None, ancilla: bool | str = "auto") -> Backend:
     """Backend by name: "ideal", a fake IBM backend such as "fake_berlin", or a real IBM device."""
     if name == "ideal":
-        return IdealBackend(seed)
+        return IdealBackend(seed, ancilla)
     if name.startswith("fake_"):
         from qiskit_ibm_runtime.fake_provider import FakeProviderForBackendV2
 
@@ -304,7 +339,8 @@ def get_backend(name: str, *, seed: int | None = None, transpile_seeds: int = 1,
             device = FakeProviderForBackendV2().backend(name)
     else:
         device = _runtime_service(instance).backend(name)
-    return IBMBackend(device, seed=seed, transpile_seeds=transpile_seeds, sampler_options=sampler_options)
+    return IBMBackend(device, seed=seed, transpile_seeds=transpile_seeds, sampler_options=sampler_options,
+                      ancilla=ancilla)
 
 
 def _runtime_service(instance=None):

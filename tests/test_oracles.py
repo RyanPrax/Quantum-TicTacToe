@@ -1,7 +1,7 @@
 """Check each oracle against the classical checker.
 
 The 22-qubit simulation takes about a second per board, so the full oracle is
-tested on a fixed sample of boards plus every double-win board. The 13-qubit
+tested on a fixed sample of boards plus every double-win board. The 12-qubit
 player oracle is fast enough to test on every board the game checks.
 """
 
@@ -29,9 +29,9 @@ SEED = 4903
 _SIMULATOR = AerSimulator(method="statevector")
 
 
-def line_probabilities(variant, board, player=None):
+def line_probabilities(variant, board, player=None, ancilla=False):
     """Exact probability of measuring each line index 0-7."""
-    qc = build_search_circuit(variant, board, player)
+    qc = build_search_circuit(variant, board, player, ancilla)
     line_reg = qc.qregs[1]
     qc = qc.remove_final_measurements(inplace=False)
     qc.save_probabilities(line_reg)
@@ -134,7 +134,7 @@ def test_full_oracle_double_win(board):
         assert probs[i] == pytest.approx(0.5 if i in winners else 0.0, abs=1e-9)
 
 
-# --- Player (13-qubit) oracle, every board from turn 5 on ---
+# --- Player (12-qubit) oracle, every board from turn 5 on ---
 
 @pytest.fixture(scope="module")
 def player_probabilities():
@@ -191,10 +191,39 @@ def test_player_oracle_opponent_never_wins(player_probabilities):
 
 def test_player_variant_size_and_gates():
     qc = build_search_circuit("player", SINGLE_WIN_SAMPLE[0], _last_player(SINGLE_WIN_SAMPLE[0]))
-    assert qc.num_qubits == 13
+    assert qc.num_qubits == 12
+    assert [r.name for r in qc.qregs] == ["board", "line"]
     mcx = [inst for inst in qc.data if inst.operation.name == "mcx"]
-    # 8 oracle MCX gates with 6 controls; the diffuser's 2-control MCX is a ccx.
-    assert [len(inst.qubits) - 1 for inst in mcx] == [6] * 8
+    # 8 oracle MCZ gates on 6 qubits, each an MCX with 5 controls; the diffuser's 2-control MCX is a ccx.
+    assert [len(inst.qubits) - 1 for inst in mcx] == [5] * 8
+
+
+def test_player_variant_with_ancilla_size_and_gates():
+    qc = build_search_circuit("player", SINGLE_WIN_SAMPLE[0], _last_player(SINGLE_WIN_SAMPLE[0]), ancilla=True)
+    assert qc.num_qubits == 13
+    assert [r.name for r in qc.qregs] == ["board", "line", "ancilla"]
+    assert "mcx" not in qc.count_ops()  # every oracle MCX is already synthesized
+
+
+ANCILLA_BOARDS = NO_WIN_SAMPLE + SINGLE_WIN_SAMPLE + DOUBLE_WINS
+
+
+@pytest.mark.parametrize("board", ANCILLA_BOARDS, ids=["".join(b).replace(" ", "_") for b in ANCILLA_BOARDS])
+def test_player_oracle_with_ancilla(board):
+    probs = line_probabilities("player", board, _last_player(board), ancilla=True)
+    assert probs == pytest.approx(_expected(_winners(board)), abs=1e-9)
+
+
+def test_ancilla_is_returned_clean():
+    board = SINGLE_WIN_SAMPLE[0]
+    qc = build_search_circuit("player", board, _last_player(board), ancilla=True).remove_final_measurements(inplace=False)
+    ancilla = qc.find_bit(qc.qregs[2][0]).index
+    assert Statevector(qc).probabilities([ancilla])[1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_full_variant_has_no_ancilla_option():
+    with pytest.raises(ValueError, match="ancilla"):
+        build_search_circuit("full", SINGLE_WIN_SAMPLE[0], ancilla=True)
 
 
 def test_player_variant_needs_player():

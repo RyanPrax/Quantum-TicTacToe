@@ -46,7 +46,7 @@ def test_get_backend_fake_is_simulated(berlin):
 
 
 def test_line_qubits_of_logical_circuit():
-    # Board (9) then line (3) then phase (1): the line register is qubits 9-11.
+    # Board (9) then line (3): the line register is qubits 9-11.
     assert line_qubits(build_search_circuit("player", TOP_ROW, X)) == (9, 10, 11)
 
 
@@ -60,6 +60,39 @@ def test_transpiled_circuits_still_find_the_winner(berlin, variant):
     # Run the hardware-transpiled circuits without noise: the answers must not change.
     boards = BOARDS if variant == "player" else BOARDS[3:5]
     circuits = [berlin.search_circuit(variant, b, _last_player(b)) for b in boards]
+    _assert_finds_winners(boards, circuits)
+
+
+def test_transpiled_circuits_with_ancilla_still_find_the_winner():
+    backend = get_backend("fake_berlin", seed=SEED, ancilla=True)
+    assert backend.logical_search_circuit("player", TOP_ROW, X).num_qubits == 13
+    assert backend.logical_search_circuit("full", TOP_ROW).num_qubits == 22  # full ignores the setting
+    assert backend.options()["ancilla"] is True
+    _assert_finds_winners(BOARDS, [backend.search_circuit("player", b, _last_player(b)) for b in BOARDS])
+
+
+def test_auto_ancilla_keeps_the_better_template(berlin):
+    assert berlin.ancilla == "auto"
+    forced = [get_backend("fake_berlin", seed=SEED, ancilla=a) for a in (False, True)]
+    scores = [b.score(b.search_template("player")) for b in forced]
+    chosen = berlin.search_template("player")
+    assert berlin.score(chosen) == max(scores)
+    assert berlin.uses_ancilla("player") == (scores[1] > scores[0]) == berlin.metrics(chosen).ancilla
+    assert not berlin.uses_ancilla("full")
+
+
+def test_auto_ancilla_on_ideal_backend_uses_no_ancilla():
+    backend = IdealBackend(seed=SEED)
+    assert not backend.uses_ancilla("player")
+    assert backend.logical_search_circuit("player", TOP_ROW, X).num_qubits == 12
+
+
+def test_unknown_ancilla_setting_is_refused():
+    with pytest.raises(ValueError, match="ancilla"):
+        IdealBackend(ancilla="yes")
+
+
+def _assert_finds_winners(boards, circuits):
     results = AerSampler(seed=SEED).run(circuits, shots=4000).result()
     for board, result in zip(boards, results):
         counts = result.data.line_cl.get_counts()

@@ -31,6 +31,8 @@ def test_detection_is_saved_with_everything_needed(store):
     assert record["winner"] == X and record["lines"] == [0]
     assert record["backend"]["name"] == "ideal"
     assert record["metrics"]["line_qubits"] == [9, 10, 11]
+    assert record["metrics"]["ancilla"] is False
+    assert record["backend"]["options"]["ancilla"] == "auto"
     assert record["profile"]["source"] == "ideal"
     assert record["provenance"]["packages"]["qiskit"]
 

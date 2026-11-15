@@ -317,7 +317,7 @@ def test_detect_winner_checks_input_before_running(kwargs, monkeypatch):
         detect_winner(TOP_ROW, **kwargs)
 
 
-# --- detect_winner, default 13-qubit player variant ---
+# --- detect_winner, default 12-qubit player variant ---
 
 def _last_player(board):
     return X if board.count(X) > board.count(O) else O
@@ -331,7 +331,7 @@ def test_detect_player_variant(board):
     assert result.variant == "player"
     assert result.lines == _winners(board)
     assert result.winner == (player if result.lines else None)
-    assert result.run.circuit.num_qubits == 13
+    assert result.run.circuit.num_qubits == 12
 
 
 def test_detect_player_variant_needs_player():

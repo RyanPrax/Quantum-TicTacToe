@@ -35,7 +35,7 @@ def encode_player_board(qc: QuantumCircuit, board_reg: QuantumRegister, board: S
     """Load one player's marks into a 9-qubit register, 1 qubit per cell.
 
     Qubit c is |1> when the player owns cell c, and |0> when the cell is empty
-    or the opponent's. Encoding for the 13-qubit "player" variant, where the
+    or the opponent's. Encoding for the 12-qubit "player" variant, where the
     player is whoever just moved (the only one who can have a line).
     """
     if len(board) != 9:

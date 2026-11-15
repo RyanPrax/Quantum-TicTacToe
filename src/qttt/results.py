@@ -236,6 +236,7 @@ def _run_fields(run, backend) -> dict:
             "log10_esp": metrics.log10_esp,
             "line_qubits": list(metrics.line_qubits),
             "transpile_seed": metrics.transpile_seed,
+            "ancilla": metrics.ancilla,
         },
     }
 
