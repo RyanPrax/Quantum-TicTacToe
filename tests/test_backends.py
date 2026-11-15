@@ -274,3 +274,15 @@ def test_simulated_runs_pad_idle_time_with_delays(berlin, monkeypatch, schedule)
         backend.run([backend.search_circuit("player", TOP_ROW, X)], shots=8)
     assert ("delay" in seen[0].count_ops()) == schedule
     assert backend.options()["schedule"] is schedule
+
+
+def test_real_devices_default_to_error_suppression(berlin):
+    from qttt.backends import DEFAULT_SAMPLER_OPTIONS
+
+    real = IBMBackend(berlin.backend, simulate=False)
+    assert real.sampler_options == DEFAULT_SAMPLER_OPTIONS
+    assert real.sampler_options["dynamical_decoupling"] == {"enable": True, "sequence_type": "XY4"}
+    real.sampler_options["twirling"]["enable_gates"] = False
+    assert DEFAULT_SAMPLER_OPTIONS["twirling"]["enable_gates"] is True  # each backend has its own copy
+    assert IBMBackend(berlin.backend, simulate=False, sampler_options={}).sampler_options == {}
+    assert berlin.sampler_options == {}  # simulated: Aer takes no Sampler options

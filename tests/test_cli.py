@@ -148,14 +148,18 @@ def test_compile_flags_reach_the_backend(monkeypatch, flag, setting):
     monkeypatch.setattr(cli, "get_backend", fake_get_backend)
     code, _ = _run(["--transpile-seeds", "3", "--ancilla", flag], ["q"])
     assert code == 0
-    assert seen == [{"transpile_seeds": 3, "ancilla": setting}]
+    assert seen == [{"transpile_seeds": 3, "ancilla": setting, "sampler_options": None}]
 
 
 def test_default_transpile_seeds(monkeypatch):
     seen = []
     monkeypatch.setattr(cli, "get_backend", lambda name, seed=None, **kwargs: seen.append(kwargs) or IdealBackend())
     _run([], ["q"])
-    assert seen == [{"transpile_seeds": 5, "ancilla": "auto"}]
+    assert seen == [{"transpile_seeds": 5, "ancilla": "auto", "sampler_options": None}]
+
+    seen.clear()
+    _run(["--no-error-suppression"], ["q"])
+    assert seen[0]["sampler_options"] == {}
 
 
 def test_bad_transpile_seeds_are_refused():

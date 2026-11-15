@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"compiler seeds tried on IBM devices, best kept (default {DEFAULT_TRANSPILE_SEEDS})")
     parser.add_argument("--ancilla", choices=ANCILLA_FLAGS, default="auto",
                         help="extra qubit for a cheaper oracle: auto keeps the better compiled circuit (default)")
+    parser.add_argument("--no-error-suppression", action="store_true",
+                        help="real devices only: run without the default dynamical decoupling and gate twirling")
     parser.add_argument("--computer", choices=(X, O), default=None,
                         help="let the computer play X or O (default: two players at one keyboard)")
     parser.add_argument("--strategy", choices=STRATEGIES, default="rules",
@@ -54,7 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _backend(name: str, args):
-    return get_backend(name, seed=args.seed, transpile_seeds=args.transpile_seeds, ancilla=ANCILLA_FLAGS[args.ancilla])
+    return get_backend(name, seed=args.seed, transpile_seeds=args.transpile_seeds, ancilla=ANCILLA_FLAGS[args.ancilla],
+                       sampler_options={} if args.no_error_suppression else None)
 
 
 def is_real_device(name: str) -> bool:

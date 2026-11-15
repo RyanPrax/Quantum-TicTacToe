@@ -32,6 +32,8 @@ def main(argv=None, read=input):
                         help=f"compiler seeds tried on IBM devices, best kept (default {DEFAULT_TRANSPILE_SEEDS})")
     parser.add_argument("--ancilla", choices=ANCILLA_FLAGS, default="auto",
                         help="extra qubit for a cheaper oracle: auto keeps the better compiled circuit (default)")
+    parser.add_argument("--no-error-suppression", action="store_true",
+                        help="real devices only: run without the default dynamical decoupling and gate twirling")
     parser.add_argument("--shots", type=int, default=DEFAULT_SHOTS)
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET)
     parser.add_argument("--boards-per-job", type=int, default=None,
@@ -43,7 +45,8 @@ def main(argv=None, read=input):
 
     boards = sample_boards(args.n, seed=args.seed, mix=args.mix)
     backend = get_backend(args.backend, seed=args.seed, transpile_seeds=args.transpile_seeds,
-                          ancilla=ANCILLA_FLAGS[args.ancilla])
+                          ancilla=ANCILLA_FLAGS[args.ancilla],
+                          sampler_options={} if args.no_error_suppression else None)
     jobs = -(-len(boards) // (args.boards_per_job or len(boards)))
     calibration = 0 if args.backend == "ideal" else (NUM_LINES + 1) * jobs
     circuits = len(boards) + calibration
