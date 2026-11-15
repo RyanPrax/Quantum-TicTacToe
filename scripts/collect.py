@@ -22,6 +22,8 @@ from qttt.experiments import (
     collect,
     default_tag,
     sample_boards,
+    save_pooled_calibration,
+    saved_profile,
     summarize,
 )
 from qttt.grover import VARIANTS
@@ -59,6 +61,9 @@ def main(argv=None, read=input):
                              f' at most 1%% misses, up to --max-shots (default {DEFAULT_SHOTS})')
     parser.add_argument("--max-shots", type=int, default=DEFAULT_MAX_SHOTS,
                         help=f"the most shots per board --shots auto may choose (default {DEFAULT_MAX_SHOTS})")
+    parser.add_argument("--calibration", nargs="+", metavar="TAG", default=None,
+                        help="use calibrations saved earlier with these tags (pooled) instead of calibrating in"
+                             " the batch job: no calibration circuits are sent")
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET)
     parser.add_argument("--boards-per-job", type=int, default=None,
                         help="split into jobs of this many boards, each with its own calibration (default: one job)")
@@ -75,7 +80,19 @@ def main(argv=None, read=input):
     tag = args.tag or default_tag()
     ask = not backend.simulated and not args.yes
     shots = args.shots
-    if shots == "auto":
+    profile = "auto"
+    if args.calibration:
+        profile, records = saved_profile(store, args.calibration, backend, args.variant)
+        print(f"Using {len(records)} saved calibration(s) ({', '.join(args.calibration)}): ε = {profile.epsilon:.3f},"
+              f" line qubits {list(profile.line_qubits)}; the batch sends no calibration circuits.")
+        if shots == "auto":
+            needed = profile.shots_needed(MISS_TARGET, args.budget, args.max_shots)
+            shots = needed or args.max_shots
+            print(f"Shots from that calibration: {shots} per board"
+                  + (f" for at most {MISS_TARGET:.0%} misses." if needed else
+                     f" (the cap; the worst win is missed {profile.miss_rates(shots, args.budget).worst:.0%}"
+                     f" of the time)."))
+    elif shots == "auto":
         print(f"Choosing shots: one calibration job on {backend.name},"
               f" {CALIBRATION_CIRCUITS} circuits x {DEFAULT_SHOTS} shots.")
         if ask and not _confirm(read):
@@ -88,7 +105,7 @@ def main(argv=None, read=input):
                                             if capped else f" for at most {MISS_TARGET:.0%} misses") + ".")
 
     jobs = -(-len(boards) // (args.boards_per_job or len(boards)))
-    calibration = 0 if args.backend == "ideal" else CALIBRATION_CIRCUITS * jobs
+    calibration = 0 if args.backend == "ideal" or args.calibration else CALIBRATION_CIRCUITS * jobs
     circuits = len(boards) + calibration
     split = ", ".join(f"{label}: {sum(b.label == label for b in boards)}" for label in LABELS)
     print(f"{len(boards)} boards ({split})"
@@ -97,7 +114,9 @@ def main(argv=None, read=input):
     if ask and not _confirm(read):
         return 1
 
-    results = collect(boards, backend, variant=args.variant, shots=shots, budget=args.budget,
+    if args.calibration:
+        profile = save_pooled_calibration(store, profile, records, backend, args.variant, tag)
+    results = collect(boards, backend, variant=args.variant, shots=shots, budget=args.budget, profile=profile,
                       store=store, tag=tag, boards_per_job=args.boards_per_job)
     profile = results[0].profile
     print(f"Saved {len(results)} results to {store.runs_file} (tag {store.load('detection')[-1]['tag']}).")

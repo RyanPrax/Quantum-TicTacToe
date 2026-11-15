@@ -172,3 +172,89 @@ def test_collect_script_chooses_shots(tmp_path, capsys):
     assert "Choosing shots" in out and "shots per board" in out
     store = RunStore(tmp_path)
     assert len(store.load("calibration", tag="a")) == 1 and len(store.load("detection", tag="a")) == 3
+
+
+def _two_saved_calibrations(store):
+    from qttt.experiments import choose_shots
+
+    for tag in ("cal-1", "cal-2"):
+        choose_shots(IdealBackend(seed=SEED), store=store, tag=tag)
+
+
+def test_saved_calibrations_replace_the_batch_calibration(tmp_path):
+    from qttt.experiments import save_pooled_calibration, saved_profile
+
+    store = RunStore(tmp_path)
+    _two_saved_calibrations(store)
+
+    class Counting(IdealBackend):
+        jobs = []
+
+        def run(self, circuits, shots, on_submit=None):
+            self.jobs.append(len(circuits))
+            return super().run(circuits, shots, on_submit)
+
+    backend = Counting(seed=SEED)
+    profile, records = saved_profile(store, ["cal-1", "cal-2"], backend)
+    assert len(records) == 2 and profile.no_win_shares is not None
+    profile = save_pooled_calibration(store, profile, records, backend, tag="batch")
+    collect(sample_boards(3, seed=SEED), backend, shots=64, profile=profile, store=store, tag="batch")
+    assert backend.jobs == [3]  # the boards only: no calibration circuits
+    (pooled,) = store.load("calibration", tag="batch")
+    assert pooled["pooled_from"] == [r["id"] for r in records] and pooled["job_id"] is None
+    assert {d["calibration_id"] for d in store.load("detection", tag="batch")} == {pooled["id"]}
+
+
+def test_saved_calibrations_that_do_not_fit_are_refused(tmp_path):
+    from qttt.experiments import saved_profile
+    from qttt.noise import NoiseProfile
+
+    store = RunStore(tmp_path)
+    _two_saved_calibrations(store)
+
+    class Other(IdealBackend):
+        name = "other"
+
+    class Suppressed(IdealBackend):
+        def options(self):
+            return {**super().options(), "sampler_options": {"twirling": {"enable_gates": True}}}
+
+    with pytest.raises(ValueError, match="ran on ideal"):
+        saved_profile(store, ["cal-1"], Other(seed=SEED))
+    with pytest.raises(ValueError, match="Sampler options"):
+        saved_profile(store, ["cal-1"], Suppressed(seed=SEED))
+    with pytest.raises(ValueError, match="no calibration saved with tag missing"):
+        saved_profile(store, ["missing"], IdealBackend(seed=SEED))
+    (record,) = store.load("calibration", tag="cal-1")
+    moved = NoiseProfile.from_record({**record["profile"], "line_qubits": [0, 1, 2]})
+    from qttt.backends import JobOutput
+    counts = tuple(map(tuple, record["readout_counts"])) + tuple(tuple(k["counts"]) for k in record["known"])
+    store.save_calibration(moved, JobOutput(counts, None), IdealBackend(seed=SEED),
+                           [(k["board"], k["player"]) for k in record["known"]], tag="moved")
+    with pytest.raises(ValueError, match="reads out"):
+        saved_profile(store, ["moved"], IdealBackend(seed=SEED))
+
+
+def test_collect_script_uses_saved_calibrations(tmp_path, capsys):
+    path = Path(__file__).resolve().parent.parent / "scripts" / "collect.py"
+    spec = importlib.util.spec_from_file_location("collect_script", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    store = RunStore(tmp_path)
+    _two_saved_calibrations(store)
+    assert script.main(["--n", "3", "--seed", "1", "--shots", "auto", "--store", str(tmp_path), "--tag", "b",
+                        "--calibration", "cal-1", "cal-2"]) == 0
+    out = capsys.readouterr().out
+    assert "sends no calibration circuits" in out and "Shots from that calibration" in out
+    assert len(store.load("detection", tag="b")) == 3
+
+
+def test_balanced_mix_uses_every_double_win_twice_then_splits_evenly():
+    from collections import Counter
+
+    boards = sample_boards(1000, seed=SEED)
+    labels = Counter(b.label for b in boards)
+    assert labels == {"double_win": 44, "single_win": 478, "no_win": 478}
+    doubles = Counter(b.board for b in boards if b.label == "double_win")
+    assert len(doubles) == 22 and set(doubles.values()) == {2}
+    assert Counter(b.label for b in sample_boards(9, seed=SEED)) == {"no_win": 3, "single_win": 3, "double_win": 3}

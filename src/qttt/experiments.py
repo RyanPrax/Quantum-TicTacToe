@@ -11,16 +11,18 @@ results against the labels.
 import random
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
-from qttt.backends import Backend
+from qttt.backends import Backend, JobOutput
 from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS, DetectionResult, detect_winners
-from qttt.noise import NoiseProfile, calibrate, known_boards
+from qttt.noise import NoiseProfile
 from qttt.results import LABELS, RunStore
+from qttt.stats import NUM_LINES
 
 MIXES = ("balanced", "natural")
+DOUBLE_REPEATS = 2  # how often "balanced" uses each of the 22 legal double wins
 
 
 @dataclass(frozen=True)
@@ -53,19 +55,24 @@ def sample_boards(n: int | None = None, seed: int | None = None,
                   mix: str | Mapping[str, int] = "balanced") -> list[LabeledBoard]:
     """Draw n labeled boards.
 
-    mix is "balanced" (as equal a split of no win / single win / double win as
-    n allows), "natural" (in proportion to how often each occurs: 3,446 / 920 /
-    22), or a mapping of label to count, e.g. {"single_win": 10, "double_win": 5},
-    which sets n itself (pass n only if it matches the total).
+    mix is "balanced", "natural" or a mapping of label to count:
+      "balanced"  every legal double win DOUBLE_REPEATS times (there are only 22),
+                  but at most a third of n, and the rest split evenly between
+                  single wins and no-win boards (an odd one goes to single wins):
+                  1000 boards are 44 double, 478 single and 478 no win.
+      "natural"   in proportion to how often each occurs in real games (3,446 /
+                  920 / 22), drawn at random within each label.
+      a mapping   e.g. {"single_win": 10, "double_win": 5}, which sets n itself
+                  (pass n only if it matches the total).
 
     With "balanced" or a mapping, boards within a label are also spread evenly
     over its strata (LabeledBoard.stratum): single wins cycle through the 8
     lines with alternating last mover, so every 16 cover each line once per
-    player, and no-win boards cycle through each (last mover, turn). Each draw
-    takes the turn used least so far, so turns are spread too. With "natural" boards are drawn at
-    random within each label, so the sample looks like real games.
-    Boards are distinct until a stratum runs out (there are only 22 double
-    wins), then repeat. The order is shuffled.
+    player, no-win boards cycle through each (last mover, turn), and each draw
+    takes the turn used least so far, so turns are spread too. Boards are
+    distinct until a stratum runs out, then repeat in the same order, so every
+    double win appears the same number of times (give or take one). The order
+    is shuffled.
     """
     if isinstance(mix, Mapping):
         if n is not None and n != sum(mix.values()):
@@ -135,24 +142,78 @@ def choose_shots(backend: Backend, variant: str = "player", budget: float = DEFA
                  tag: str | None = None) -> tuple[int, NoiseProfile]:
     """Shots per board for a batch, from a short calibration job on the backend itself.
 
-    Runs only the calibration circuits (DEFAULT_SHOTS each), saves that
-    calibration to store (default results/: it used device time), and returns
-    the shots its profile predicts for at most MISS_TARGET misses within the
-    false-flag budget, capped at max_shots, with the profile. When some line's
-    winner cannot be told from a loser at any shot count up to the cap, the cap
-    is returned; profile.miss_rates(shots, budget) shows what that costs.
+    Runs only the calibration circuits (DEFAULT_SHOTS each) as a job of its own
+    through detect_winners, so it is recorded the moment it is submitted and
+    its counts the moment they return (resume_job finishes it if it is
+    interrupted), and its calibration is saved to store (default results/).
+    Returns the shots that calibration's profile predicts for at most
+    MISS_TARGET misses within the false-flag budget, capped at max_shots, with
+    the profile. When some line's winner cannot be told from a loser at any shot
+    count up to the cap, the cap is returned; profile.miss_rates(shots, budget)
+    shows what that costs.
     """
     if store is None:
         store = RunStore()
-    known = known_boards(variant)
-    profile, out = calibrate(backend, variant, DEFAULT_SHOTS, known)
-    store.save_calibration(profile, out, backend, known, variant, tag)
+    detect_winners([], variant=variant, shots=DEFAULT_SHOTS, budget=budget, backend=backend,
+                   profile="calibrate", store=store, tag=tag)
+    submitted = [r for r in store.load("job") if r["status"] == "submitted"][-1]
+    (record,) = [r for r in store.load("calibration") if r.get("job_record") == submitted["id"]]
+    profile = replace(NoiseProfile.from_record(record["profile"]), calibration_id=record["id"])
     return profile.shots_needed(MISS_TARGET, budget, max_shots) or max_shots, profile
 
 
 def default_tag() -> str:
     """A batch name from the current time, e.g. collect-20261115T093000Z."""
     return "collect-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def saved_profile(store: RunStore, tags: Sequence[str], backend: Backend,
+                  variant: str = "player") -> tuple[NoiseProfile, list[dict]]:
+    """One profile from calibrations saved earlier (found by tag), so a batch can skip its own calibration.
+
+    Each calibration must have run on this backend with the same Sampler
+    options and variant, and on the line qubits this backend's search circuit
+    reads out on now (a device can move them when it is recalibrated). Their
+    readout counts and known boards are pooled and fitted as one calibration.
+    Returns the profile and the records; save_pooled_calibration records it.
+    """
+    records = [r for r in store.load("calibration") if r["tag"] in set(tags)]
+    missing = set(tags) - {r["tag"] for r in records}
+    if missing:
+        raise ValueError(f"no calibration saved with tag {', '.join(sorted(missing))}")
+    line_qubits = backend.metrics(backend.search_template(variant)).line_qubits
+    options = backend.options().get("sampler_options")
+    for r in records:
+        problems = []
+        if r["backend"]["name"] != backend.name:
+            problems.append(f"it ran on {r['backend']['name']}")
+        if r["backend"]["options"].get("sampler_options") != options:
+            problems.append(f"it ran with Sampler options {r['backend']['options'].get('sampler_options') or 'none'},"
+                            f" this run uses {options or 'none'}")
+        if r["variant"] != variant:
+            problems.append(f"it is for the {r['variant']} variant")
+        if tuple(r["profile"]["line_qubits"]) != tuple(line_qubits):
+            problems.append(f"it measured line qubits {r['profile']['line_qubits']}, but the circuit now reads out"
+                            f" on {list(line_qubits)}")
+        if problems:
+            raise ValueError(f"calibration {r['tag']} does not fit this run: {'; '.join(problems)}")
+    readout = [[sum(r["readout_counts"][p][m] for r in records) for m in range(NUM_LINES)] for p in range(NUM_LINES)]
+    known = [(tuple(k["board"]), k["counts"]) for r in records for k in r["known"]]
+    profile = NoiseProfile.from_calibration(readout, known, source=f"calibration:{backend.name}",
+                                            line_qubits=tuple(line_qubits))
+    return profile, records
+
+
+def save_pooled_calibration(store: RunStore, profile: NoiseProfile, records: list[dict], backend: Backend,
+                            variant: str = "player", tag: str | None = None) -> NoiseProfile:
+    """Save a saved_profile() result as its own calibration record; returns the profile linked to it."""
+    readout = [[sum(r["readout_counts"][p][m] for r in records) for m in range(NUM_LINES)] for p in range(NUM_LINES)]
+    known = [(k["board"], k["player"]) for r in records for k in r["known"]]
+    counts = [tuple(k["counts"]) for r in records for k in r["known"]]
+    output = JobOutput(tuple(tuple(row) for row in readout) + tuple(counts), None)
+    calibration_id = store.save_calibration(profile, output, backend, known, variant, tag,
+                                            pooled_from=[r["id"] for r in records])
+    return replace(profile, calibration_id=calibration_id)
 
 
 def collect(boards: Sequence[LabeledBoard], backend: Backend, variant: str = "player", shots: int = DEFAULT_SHOTS,
@@ -225,8 +286,9 @@ def _label_counts(n, mix, groups):
             raise ValueError(f"Unknown labels {sorted(unknown)}; expected {LABELS}.")
         return dict(mix)
     if mix == "balanced":
-        base, extra = divmod(n, len(LABELS))
-        return {label: base + (i < extra) for i, label in enumerate(LABELS)}
+        double = min(DOUBLE_REPEATS * len(groups[2]), n // 3)
+        single = -(-(n - double) // 2)
+        return {"no_win": n - double - single, "single_win": single, "double_win": double}
     if mix == "natural":
         sizes = [len(groups[w]) for w in range(len(LABELS))]
         total = sum(sizes)

@@ -143,11 +143,13 @@ class RunStore:
         return self._append(record, run.transpiled)
 
     def save_calibration(self, profile, output, backend, known, variant: str = "player", tag: str | None = None,
-                         job_record: str | None = None) -> str:
+                         job_record: str | None = None, pooled_from: list[str] | None = None) -> str:
         """Record a calibration: readout counts, known boards and the fitted profile.
 
         output is the job's output; its first counts are the 8 readout circuits,
-        then one per known board (anything after that is ignored).
+        then one per known board (anything after that is ignored). A calibration
+        pooled from saved ones (experiments.saved_profile) names their record ids
+        in pooled_from and has no job of its own.
         """
         num_lines = len(profile.readout)
         record = {
@@ -161,6 +163,7 @@ class RunStore:
                       for (board, player), counts in zip(known, output.counts[num_lines:], strict=False)],
             "profile": _profile_summary(profile),
             "job_id": output.job_id,
+            "pooled_from": pooled_from,
             "backend": _backend_fields(backend),
         }
         return self._append(record, None)
