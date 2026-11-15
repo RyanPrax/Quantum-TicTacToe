@@ -41,10 +41,12 @@ _MIN_Q0 = 1e-12  # keeps binomial_cutoff's q0 strictly inside (0, 1)
 _MIN_SIGNAL = 1e-3  # a board whose fitted signal is at or below 0 still gets a finite log
 _MAX_FACTOR = 2.0  # a bit factor above 1 is possible (noise), but not without bound
 
-# Legal boards with known answers, measured in every calibrating job. X wins
-# lines 0, 1, 2 and 4 (index 000, 001, 010, 100): one board per bit of the line
-# index plus the base, which fixes ε and the 3 bit factors. The two no-win
-# boards (X just moved on turn 5, O on turn 6) measure how high losing lines get.
+# Legal boards with known answers, measured in every calibrating job: a single
+# win for X on each of the 8 lines (X just moved, turn 5), so each bit of the
+# line index is 1 on four of them and ε and the 3 bit factors are fitted from
+# all eight (scripts/calibration_check.py: twice as precise as one board per
+# bit), and two boards without a winner (X just moved on turn 5, O on turn 6)
+# that measure how high losing lines get.
 CALIBRATION_BOARD = (X, X, X,
                      O, O, EMPTY,
                      EMPTY, EMPTY, EMPTY)
@@ -56,9 +58,21 @@ CALIBRATION_BOARDS = (
     ((O, O, EMPTY,
       EMPTY, EMPTY, EMPTY,
       X, X, X), X),
+    ((X, O, O,
+      X, EMPTY, EMPTY,
+      X, EMPTY, EMPTY), X),
     ((O, X, O,
       EMPTY, X, EMPTY,
       EMPTY, X, EMPTY), X),
+    ((O, O, X,
+      EMPTY, EMPTY, X,
+      EMPTY, EMPTY, X), X),
+    ((X, O, O,
+      EMPTY, X, EMPTY,
+      EMPTY, EMPTY, X), X),
+    ((O, O, X,
+      EMPTY, X, EMPTY,
+      X, EMPTY, EMPTY), X),
     ((X, O, EMPTY,
       EMPTY, O, X,
       EMPTY, X, EMPTY), X),
@@ -368,6 +382,12 @@ def fit_line_signal(readout, known: Sequence[tuple[Sequence[str], Sequence[int]]
 
 
 DEFAULT_KNOWN = CALIBRATION_BOARDS
+
+
+def known_boards(variant: str = "player") -> tuple:
+    """The calibration boards as (board, player) pairs for this variant (the legacy full variant takes no player)."""
+    return DEFAULT_KNOWN if variant == "player" else tuple((board, None) for board, _ in DEFAULT_KNOWN)
+
 CALIBRATION_CIRCUITS = NUM_LINES + len(DEFAULT_KNOWN)  # readout circuits plus the known boards, per job
 
 

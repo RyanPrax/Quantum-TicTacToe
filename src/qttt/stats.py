@@ -6,6 +6,7 @@ from qttt.board import WIN_LINES
 
 NUM_LINES = len(WIN_LINES)
 
+DEFAULT_BUDGET = 0.2  # expected false flags per board: one extra classical check every five boards
 
 def binomial_log_pmf(j, n, q):
     """log P(K = j) for K ~ Binomial(n, q)"""
@@ -65,7 +66,7 @@ def binomial_both_below(n, k1, p1, k2, p2):
     return min(1.0, total)
 
 
-def binomial_cutoff(shots=1024, budget=0.1, q0=1/8) -> int:
+def binomial_cutoff(shots=1024, budget=DEFAULT_BUDGET, q0=1/8) -> int:
     """
     returns the smallest count k where the expected number of falsely flagged lines,
     8 · P(K ≥ k | shots, q0), is at most budget, and a line is flagged when count >= k.

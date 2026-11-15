@@ -119,7 +119,7 @@ def test_cutoff_matches_reference(budget, q0):
 
 
 def test_defaults():
-    assert binomial_cutoff() == binomial_cutoff(1024, 0.1, 1 / 8)
+    assert binomial_cutoff() == binomial_cutoff(1024, DEFAULT_BUDGET, 1 / 8)
 
 
 def test_more_shots_lowers_cutoff_fraction():

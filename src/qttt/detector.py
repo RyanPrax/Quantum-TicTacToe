@@ -9,12 +9,11 @@ from qiskit import QuantumCircuit
 
 from qttt.backends import Backend, CircuitMetrics, IdealBackend, JobOutput, line_qubits
 from qttt.board import EMPTY, WIN_LINES
-from qttt.noise import DEFAULT_KNOWN, NoiseProfile, calibration_circuits, profile_from_calibration
+from qttt.noise import NoiseProfile, calibration_circuits, known_boards, profile_from_calibration
 from qttt.results import RunStore
-from qttt.stats import NUM_LINES
+from qttt.stats import DEFAULT_BUDGET, NUM_LINES
 
 DEFAULT_SHOTS = 1024
-DEFAULT_BUDGET = 0.1
 
 
 @dataclass(frozen=True)
@@ -148,7 +147,7 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
     store = _open_store(store, backend)
 
     calibrating = profile == "calibrate"
-    known = _known(variant) if calibrating else ()
+    known = known_boards(variant) if calibrating else ()
     circuits, transpiled = _search_circuits(cases, variant, backend)
     extra, line_qubits = calibration_circuits(backend, variant, known) if calibrating else ([], None)
     if not calibrating:
@@ -211,9 +210,6 @@ def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike =
     return _finish(cases, variant, submitted["shots"], submitted["budget"], backend, out, circuits, transpiled,
                    len(extra), profile, known, line_qubits, store, submitted["tag"], submitted["id"])
 
-
-def _known(variant):
-    return DEFAULT_KNOWN if variant == "player" else tuple((board, None) for board, _ in DEFAULT_KNOWN)
 
 
 def _open_store(store, backend):
