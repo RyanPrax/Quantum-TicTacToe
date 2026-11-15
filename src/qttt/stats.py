@@ -90,3 +90,17 @@ def binomial_cutoff(shots=1024, budget=0.1, q0=1/8) -> int:
         tail = next_tail
         k -= 1
     return k
+
+
+def wilson_interval(successes: int, trials: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a success rate (95% by default); (0, 1) with no trials.
+
+    Unlike the plain p ± z·sqrt(p(1-p)/n), it stays inside [0, 1] and is not
+    zero-width at 0 or n successes, which matters for small batches.
+    """
+    if trials == 0:
+        return (0.0, 1.0)
+    p = successes / trials
+    centre = (p + z * z / (2 * trials)) / (1 + z * z / trials)
+    half = z * sqrt(p * (1 - p) / trials + z * z / (4 * trials * trials)) / (1 + z * z / trials)
+    return (max(0.0, centre - half), min(1.0, centre + half))

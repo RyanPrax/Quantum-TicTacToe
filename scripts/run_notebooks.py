@@ -25,12 +25,17 @@ def notebook_paths(names=()):
 
 
 def execute(path: Path, save: bool = True) -> nbformat.NotebookNode:
-    nb = nbformat.read(path, as_version=4)
-    # The kernel talks to this process over TCP on 127.0.0.1 only (Jupyter's default).
-    NotebookClient(nb, timeout=TIMEOUT, kernel_name="python3", record_timing=False,
-                   resources={"metadata": {"path": str(path.parent)}}).execute()
+    nb = run(nbformat.read(path, as_version=4), path.parent)
     if save:
         nbformat.write(nb, path)
+    return nb
+
+
+def run(nb: nbformat.NotebookNode, directory: Path) -> nbformat.NotebookNode:
+    """Execute a notebook in place, with directory as its working directory; raises if a cell fails."""
+    # The kernel talks to this process over TCP on 127.0.0.1 only (Jupyter's default).
+    NotebookClient(nb, timeout=TIMEOUT, kernel_name="python3", record_timing=False,
+                   resources={"metadata": {"path": str(directory)}}).execute()
     return nb
 
 

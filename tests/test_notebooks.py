@@ -44,3 +44,45 @@ def test_hardware_notebook_does_not_submit_by_default():
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: p.stem)
 def test_notebook_runs(path):
     _runner().execute(path, save=False)  # raises if any cell fails
+
+
+def _present_simulated_jobs(store_path):
+    """Run 03 on a store of simulated jobs (hardware jobs can't be made in a test); returns its printed text.
+
+    Every analysis cell then runs on real records before any hardware result exists.
+    """
+    nb = nbformat.read(ROOT / "notebooks" / "03_hardware.ipynb", as_version=4)
+    setup = next(c for c in nb.cells if "HARDWARE_ONLY = True" in c.source)
+    setup.source = setup.source.replace('STORE = RunStore("../results")', f"STORE = RunStore({str(store_path)!r})")
+    setup.source = setup.source.replace("HARDWARE_ONLY = True", "HARDWARE_ONLY = False")
+    _runner().run(nb, ROOT / "notebooks")
+    return "".join(o.get("text", "") for c in nb.cells if c.cell_type == "code" for o in c.outputs)
+
+
+def test_hardware_notebook_presents_saved_jobs(tmp_path):
+    from qttt.backends import IdealBackend
+    from qttt.experiments import collect, sample_boards
+    from qttt.results import RunStore
+
+    collect(sample_boards(6, seed=1), IdealBackend(seed=1), shots=128, profile="calibrate",
+            store=RunStore(tmp_path), boards_per_job=3, tag="test")
+    text = _present_simulated_jobs(tmp_path)
+    assert text.count("aer ideal") >= 4  # both jobs listed and presented
+    assert "No reported line was ever a wrong winner." in text
+
+
+@pytest.mark.slow
+def test_hardware_notebook_compares_with_published_data(tmp_path):
+    # A fake IBM device publishes gate errors, so the published-data prediction is drawn too.
+    from qttt.backends import get_backend
+    from qttt.experiments import collect, sample_boards
+    from qttt.results import RunStore
+
+    collect(sample_boards(seed=1, mix={"single_win": 2}), get_backend("fake_berlin", seed=1), shots=64,
+            store=RunStore(tmp_path), tag="test")
+    from qttt.analysis import jobs
+
+    (job,) = jobs(RunStore(tmp_path), hardware_only=False)
+    assert job.published_profile is not None  # so the notebook draws the published-data bars
+    text = _present_simulated_jobs(tmp_path)
+    assert "ibm fake_berlin" in text and "Sampler options: none" in text
