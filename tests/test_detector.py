@@ -1,8 +1,9 @@
 """Tests for the winner detector.
 
 Cutoff and flag-and-check tests are pure Python. End-to-end tests run the
-22-qubit circuit on the ideal simulator (about a second per board) with a fixed
-seed, so their counts are the same on every run.
+search circuit on the ideal simulator with a fixed seed, so their counts are
+the same on every run; the legacy 22-qubit variant takes about a second per
+board, so its tests are marked slow.
 """
 
 import dataclasses
@@ -222,7 +223,7 @@ DOUBLE_WIN = (X, X, X,
           _, O, _), (0, 0, 0, 0, 1024, 0, 0, 0), ((4,), (), frozenset({4}), O)),
     ],
 )
-def testflag_and_check(board, counts, expected):
+def test_flag_and_check(board, counts, expected):
     assert flag_and_check(board, counts, 153) == expected
 
 
