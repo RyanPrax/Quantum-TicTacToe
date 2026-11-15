@@ -22,6 +22,25 @@ def test_balanced_mix_and_true_labels():
         assert b.board.count(" ") <= 4  # turn 5 or later
 
 
+def test_balanced_single_wins_cover_every_line_and_player():
+    boards = sample_boards(seed=SEED, mix={"single_win": 16})
+    assert sorted(b.stratum for b in boards) == [(line, p) for line in range(8) for p in ("O", "X")]
+    first_eight = sample_boards(seed=SEED, mix={"single_win": 8})
+    assert sorted(line for line, _ in (b.stratum for b in first_eight)) == list(range(8))
+    assert {b.player for b in first_eight} == {"X", "O"}
+
+
+def test_balanced_no_win_boards_cover_every_player_and_turn():
+    boards = sample_boards(seed=SEED, mix={"no_win": 5})
+    assert sorted(b.stratum for b in boards) == [("O", 6), ("O", 8), ("X", 5), ("X", 7), ("X", 9)]
+
+
+def test_balanced_spreads_turns():
+    turns = [b.turn for b in sample_boards(seed=SEED, mix={"single_win": 40})]
+    assert set(turns) == {5, 6, 7, 8, 9}
+    assert max(turns.count(t) for t in set(turns)) - min(turns.count(t) for t in set(turns)) <= 4
+
+
 def test_same_seed_same_boards():
     assert sample_boards(9, seed=1) == sample_boards(9, seed=1)
     assert sample_boards(9, seed=1) != sample_boards(9, seed=2)
@@ -55,6 +74,7 @@ def test_collect_saves_labeled_results(tmp_path):
     assert len(records) == 6
     assert [r["label"] for r in records] == [b.label for b in boards]
     assert [r["true_lines"] for r in records] == [sorted(b.lines) for b in boards]
+    assert [r["turn"] for r in records] == [b.turn for b in boards]
     s = summarize(boards, results)
     assert s.wins_found["single_win"] == s.boards["single_win"]
     assert s.all_lines_found["double_win"] == s.boards["double_win"]

@@ -9,13 +9,13 @@ results against the labels.
 """
 
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from qttt.backends import Backend
-from qttt.board import O, X, boards_by_win_count, classical_winning_lines
+from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS, DetectionResult, detect_winners
 from qttt.noise import NoiseProfile
 from qttt.results import LABELS, RunStore
@@ -33,6 +33,21 @@ class LabeledBoard:
     def label(self) -> str:
         return LABELS[len(self.lines)]
 
+    @property
+    def turn(self) -> int:
+        """Marks on the board (5-9), so also how many the player who just moved has."""
+        return 9 - self.board.count(EMPTY)
+
+    @property
+    def stratum(self) -> tuple:
+        """The group sample_boards balances within a label: (line, player) for a single win,
+        (player, turn) for no win; double wins (all X on turn 9) form one group."""
+        if len(self.lines) == 1:
+            return (min(self.lines), self.player)
+        if not self.lines:
+            return (self.player, self.turn)
+        return ()
+
 
 def sample_boards(n: int | None = None, seed: int | None = None,
                   mix: str | Mapping[str, int] = "balanced") -> list[LabeledBoard]:
@@ -42,8 +57,15 @@ def sample_boards(n: int | None = None, seed: int | None = None,
     n allows), "natural" (in proportion to how often each occurs: 3,446 / 920 /
     22), or a mapping of label to count, e.g. {"single_win": 10, "double_win": 5},
     which sets n itself (pass n only if it matches the total).
-    Within a label boards are distinct until that label runs out (there are
-    only 22 double wins), then repeat. The order is shuffled.
+
+    With "balanced" or a mapping, boards within a label are also spread evenly
+    over its strata (LabeledBoard.stratum): single wins cycle through the 8
+    lines with alternating last mover, so every 16 cover each line once per
+    player, and no-win boards cycle through each (last mover, turn). Each draw
+    takes the turn used least so far, so turns are spread too. With "natural" boards are drawn at
+    random within each label, so the sample looks like real games.
+    Boards are distinct until a stratum runs out (there are only 22 double
+    wins), then repeat. The order is shuffled.
     """
     if isinstance(mix, Mapping):
         if n is not None and n != sum(mix.values()):
@@ -55,14 +77,53 @@ def sample_boards(n: int | None = None, seed: int | None = None,
     counts = _label_counts(n, mix, groups)
     picked = []
     for wins, label in enumerate(LABELS):
-        pool = groups[wins]
+        pool = [_labeled(board) for board in groups[wins]]
         k = counts.get(label, 0)
-        chosen = rng.sample(pool, min(k, len(pool))) + [rng.choice(pool) for _ in range(k - len(pool))]
-        for board in chosen:
-            player = X if board.count(X) > board.count(O) else O  # who just moved
-            picked.append(LabeledBoard(board, player, frozenset(classical_winning_lines(board, player))))
+        if mix == "natural":
+            picked += rng.sample(pool, min(k, len(pool))) + [rng.choice(pool) for _ in range(k - len(pool))]
+        else:
+            picked += _balanced(pool, k, rng)
     rng.shuffle(picked)
     return picked
+
+
+def _labeled(board) -> LabeledBoard:
+    player = X if board.count(X) > board.count(O) else O  # who just moved
+    return LabeledBoard(board, player, frozenset(classical_winning_lines(board, player)))
+
+
+def _balanced(pool: list[LabeledBoard], k: int, rng: random.Random) -> list[LabeledBoard]:
+    """k boards drawn round-robin over the pool's strata; each draw takes the turn used least so far."""
+    cells = defaultdict(lambda: defaultdict(list))  # stratum -> turn -> boards
+    for b in pool:
+        cells[b.stratum][b.turn].append(b)
+    for turns in cells.values():
+        for boards in turns.values():
+            rng.shuffle(boards)
+    order = _stratum_order(sorted(cells))
+    used = Counter()  # (stratum, turn) -> boards taken
+    turn_counts = Counter()
+    chosen = []
+    for i in range(k):
+        key = order[i % len(order)]
+        turns = cells[key]
+        fresh = [t for t in turns if used[key, t] < len(turns[t])] or list(turns)  # all used: repeat
+        turn = min(fresh, key=lambda t: (turn_counts[t], rng.random()))
+        boards = turns[turn]
+        chosen.append(boards[used[key, turn] % len(boards)])
+        used[key, turn] += 1
+        turn_counts[turn] += 1
+    return chosen
+
+
+def _stratum_order(keys):
+    """Single-win strata as line 0-7 with X and O alternating (and swapped every second round), so
+    any 8 in a row cover every line; other labels in sorted order with the players interleaved."""
+    if keys and len(keys[0]) == 2 and isinstance(keys[0][0], int):  # (line, player)
+        lines = sorted({line for line, _ in keys})
+        order = [(line, (X, O)[(line + r) % 2]) for r in range(2) for line in lines]
+        return [key for key in order if key in keys] + [key for key in keys if key not in order]
+    return sorted(keys, key=lambda key: (key[1:], key[:1])) if keys and len(keys[0]) == 2 else list(keys)
 
 
 def collect(boards: Sequence[LabeledBoard], backend: Backend, variant: str = "player", shots: int = DEFAULT_SHOTS,

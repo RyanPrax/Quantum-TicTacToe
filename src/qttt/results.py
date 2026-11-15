@@ -114,6 +114,7 @@ class RunStore:
             "variant": result.variant,
             "board": "".join(result.board),
             "player": result.player,
+            "turn": 9 - result.board.count(" "),  # marks on the board
             "shots": run.shots,
             "budget": result.budget,
             "cutoffs": list(result.cutoffs),
