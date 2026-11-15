@@ -56,6 +56,8 @@ class CircuitMetrics:
     line_qubits: tuple[int, ...]  # physical qubit measured into line_cl[0], [1], [2]
     transpile_seed: int | None
     ancilla: bool = False  # the player search circuit's extra qubit (see Backend)
+    log10_idle: float | None = None  # None without published T1/T2 (see Backend.idle_log10_survival)
+    log10_readout: float | None = None  # None without published readout errors
 
 
 @dataclass(frozen=True)
@@ -122,9 +124,15 @@ class Backend(ABC):
         return self._templates[variant]
 
     def score(self, tqc: QuantumCircuit) -> tuple[float, int]:
-        """How good a transpiled circuit is, higher is better: its ESP, then fewer two-qubit gates."""
-        esp = self.gate_log10_esp(tqc)
-        return (esp if esp is not None else 0.0, -two_qubit_count(tqc))
+        """How good a transpiled circuit is, higher is better, from published data only.
+
+        First the log10 chance that nothing goes wrong: no gate fails (ESP), no
+        qubit loses coherence while it waits, and the 3 line qubits read out
+        correctly, counting each part the backend publishes; then fewer
+        two-qubit gates.
+        """
+        parts = (self.gate_log10_esp(tqc), self.idle_log10_survival(tqc), self.readout_log10_success(tqc))
+        return (sum(p for p in parts if p is not None), -two_qubit_count(tqc))
 
     def set_search_template(self, variant: str, tqc: QuantumCircuit) -> None:
         """Use a template transpiled earlier (for example one saved in a RunStore) instead of transpiling."""
@@ -164,9 +172,20 @@ class Backend(ABC):
         """log10 of the product of (1 - error) over every gate, or None without gate errors."""
         return None
 
+    def idle_log10_survival(self, tqc: QuantumCircuit) -> float | None:
+        """log10 of the chance that no qubit loses coherence while it waits, or None without timing data."""
+        return None
+
     def readout_errors(self, qubits: Sequence[int]) -> list[tuple[float, float]] | None:
         """Per qubit (P(read 1 | prepared 0), P(read 0 | prepared 1)), or None if unpublished."""
         return None
+
+    def readout_log10_success(self, tqc: QuantumCircuit) -> float | None:
+        """log10 of the chance that the 3 line qubits all read out correctly (average of both errors)."""
+        errors = self.readout_errors(line_qubits(tqc))
+        if errors is None:
+            return None
+        return sum(math.log10(1 - (e01 + e10) / 2) for e01, e10 in errors)
 
     def calibration_date(self) -> str | None:
         """When the published calibration data was taken, if there is any."""
@@ -198,6 +217,8 @@ class Backend(ABC):
             line_qubits=line_qubits(tqc),
             transpile_seed=tqc.metadata.get("transpile_seed"),
             ancilla=tqc.metadata.get("ancilla", False),
+            log10_idle=self.idle_log10_survival(tqc),
+            log10_readout=self.readout_log10_success(tqc),
         )
 
 
@@ -328,6 +349,44 @@ class IBMBackend(Backend):
                 found = True
                 # Summed as logs: ESP itself can be smaller than a float can hold.
                 total += math.log10(1 - props.error) if props.error < 1 else -math.inf
+        return total if found else None
+
+    def idle_log10_survival(self, tqc):
+        """Each idle stretch on an exposed qubit, after its first gate, survives with exp(-t / T2).
+
+        Exposed qubits are the ones the search circuit holds in superposition
+        the whole time (the line register and the ancilla or phase qubit, from
+        the circuit's "exposed_qubits" metadata), at the physical qubits where
+        they start and where the line is measured; board qubits only hold 0 or
+        1 as controls, so losing phase does not hurt them. A circuit without
+        that metadata counts every qubit. The circuit is scheduled as late as
+        possible (as the device and the simulator run it), and T2 is capped at
+        2 T1. scripts/score_check.py checks this ranking against measured signal.
+        """
+        target = self.backend.target
+        props = target.qubit_properties
+        if not props or target.dt is None:
+            return None
+        exposed = None
+        if "exposed_qubits" in (tqc.metadata or {}) and tqc.layout is not None:
+            layout = tqc.layout.initial_index_layout(filter_ancillas=True)
+            exposed = {layout[i] for i in tqc.metadata["exposed_qubits"]} | set(line_qubits(tqc))
+        scheduled = PassManager([ALAPScheduleAnalysis(target=target), PadDelay(target=target)]).run(tqc)
+        started = set()
+        total = 0.0
+        found = False
+        for inst in scheduled.data:
+            q = scheduled.find_bit(inst.qubits[0]).index if inst.qubits else None
+            if inst.operation.name != "delay":
+                started.update(scheduled.find_bit(b).index for b in inst.qubits)
+                continue
+            p = props[q] if q is not None and q < len(props) else None
+            if q not in started or (exposed is not None and q not in exposed) or p is None or p.t1 is None \
+                    or p.t2 is None:
+                continue
+            seconds = inst.operation.duration * (target.dt if inst.operation.unit == "dt" else 1)
+            total -= seconds / min(p.t2, 2 * p.t1) / math.log(10)
+            found = True
         return total if found else None
 
     def readout_errors(self, qubits):

@@ -254,6 +254,8 @@ def _run_fields(run, backend) -> dict:
             "two_qubit_gates": metrics.two_qubit_gates,
             "depth": metrics.depth,
             "log10_esp": metrics.log10_esp,
+            "log10_idle": metrics.log10_idle,
+            "log10_readout": metrics.log10_readout,
             "line_qubits": list(metrics.line_qubits),
             "transpile_seed": metrics.transpile_seed,
             "ancilla": metrics.ancilla,

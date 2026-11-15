@@ -230,3 +230,14 @@ def test_full_variant_has_no_ancilla_option():
 def test_player_variant_needs_player():
     with pytest.raises(ValueError):
         build_search_circuit("player", SINGLE_WIN_SAMPLE[0])
+
+
+@pytest.mark.parametrize("variant, ancilla, exposed", [
+    ("player", False, [9, 10, 11]),
+    ("player", True, [9, 10, 11, 12]),
+    ("full", False, [18, 19, 20, 21]),
+])
+def test_search_circuit_names_its_qubits_in_superposition(variant, ancilla, exposed):
+    board = SINGLE_WIN_SAMPLE[0]
+    qc = build_search_circuit(variant, board, _last_player(board) if variant == "player" else None, ancilla)
+    assert qc.metadata["exposed_qubits"] == exposed

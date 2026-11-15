@@ -286,3 +286,26 @@ def test_real_devices_default_to_error_suppression(berlin):
     assert DEFAULT_SAMPLER_OPTIONS["twirling"]["enable_gates"] is True  # each backend has its own copy
     assert IBMBackend(berlin.backend, simulate=False, sampler_options={}).sampler_options == {}
     assert berlin.sampler_options == {}  # simulated: Aer takes no Sampler options
+
+
+def test_score_counts_gates_idle_time_and_readout(berlin):
+    template = berlin.search_template("player")
+    m = berlin.metrics(template)
+    assert m.log10_esp < 0 and m.log10_idle < 0 and m.log10_readout < 0
+    assert berlin.score(template)[0] == pytest.approx(m.log10_esp + m.log10_idle + m.log10_readout)
+
+
+def test_idle_time_counts_only_on_qubits_held_in_superposition(berlin):
+    template = berlin.search_template("player")
+    every_qubit = template.copy()
+    every_qubit.metadata = {k: v for k, v in template.metadata.items() if k != "exposed_qubits"}
+    # Board qubits only hold 0 or 1, so leaving them out loses less coherence than counting every qubit.
+    assert berlin.idle_log10_survival(template) > berlin.idle_log10_survival(every_qubit)
+
+
+def test_ideal_backend_scores_by_two_qubit_gates_only():
+    backend = IdealBackend(seed=SEED)
+    template = backend.search_template("player")
+    m = backend.metrics(template)
+    assert m.log10_idle is None and m.log10_readout is None
+    assert backend.score(template)[0] == 0.0

@@ -93,5 +93,7 @@ def build_search_circuit(
     qc.barrier(label="Diffuser")
 
     qc.measure(line_reg, line_cl)
-    qc.metadata = {"ancilla": ancilla}
+    # Logical qubits held in superposition the whole time; the board qubits only hold 0 or 1 as controls.
+    exposed = list(line_reg) + (list(phase_reg) if variant == "full" else ancilla_reg[0][:] if ancilla else [])
+    qc.metadata = {"ancilla": ancilla, "exposed_qubits": [qc.find_bit(q).index for q in exposed]}
     return qc
