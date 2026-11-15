@@ -62,3 +62,17 @@ def test_wilson_interval(k, n, low, high):
     lo, hi = wilson_interval(k, n)
     assert lo == pytest.approx(low, abs=1e-3) and hi == pytest.approx(high, abs=1e-3)
     assert wilson_interval(0, 0) == (0.0, 1.0)
+
+
+def test_rescore_recomputes_verdicts_from_saved_counts(store):
+    from qttt.analysis import rescore
+
+    job = jobs(store, hardware_only=False)[0]
+    again = rescore(job)
+    assert [d["lines"] for d in again.detections] == [d["lines"] for d in job.detections]  # same rule, same verdicts
+    assert all(d["lines_at_run"] == d["lines"] and d["cutoffs_at_run"] == d["cutoffs"] for d in again.detections)
+    assert again.measured_profile.calibration_id == job.calibration["id"]
+
+    strict = {**job.detections[0], "cutoffs": [10**6] * 8}  # as if an older rule had flagged nothing
+    rescored = rescore(Job([strict], job.calibration, job.submitted)).detections[0]
+    assert rescored["cutoffs"] == job.detections[0]["cutoffs"] and rescored["cutoffs_at_run"] == [10**6] * 8

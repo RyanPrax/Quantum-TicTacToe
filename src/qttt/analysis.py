@@ -6,10 +6,11 @@ provider that publishes no gate errors simply has no published-data profile.
 """
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from qttt.detector import flag_and_check
 from qttt.noise import NoiseProfile
-from qttt.results import LABELS, RunStore
+from qttt.results import LABELS, RunStore, _profile_summary
 from qttt.stats import wilson_interval
 
 
@@ -62,6 +63,33 @@ def jobs(store: RunStore, hardware_only: bool = True) -> list[Job]:
     found = [Job(group, calibrations.get(group[0]["calibration_id"]), submitted.get(group[0].get("job_record")))
              for group in groups.values()]
     return sorted(found, key=lambda job: job.first["created"])
+
+
+def rescore(job: Job) -> Job:
+    """The job with every board's verdict recomputed from its saved counts by the current calibration rule.
+
+    The profile is fitted again from the job's saved calibration counts (readout
+    circuits and known boards), so jobs saved under an older rule are scored the
+    same way as new ones; a job without a calibration keeps the profile it ran
+    with. Each detection keeps its run-time cutoffs and lines as
+    cutoffs_at_run and lines_at_run; the saved records are not changed.
+    """
+    profile = job.measured_profile
+    if job.calibration is not None:
+        known = [(tuple(k["board"]), k["counts"]) for k in job.calibration["known"]]
+        profile = replace(NoiseProfile.from_calibration(job.calibration["readout_counts"], known,
+                                                        source=job.calibration["profile"]["source"],
+                                                        line_qubits=profile.line_qubits),
+                          calibration_id=job.calibration["id"])
+    detections = []
+    for r in job.detections:
+        cutoffs = profile.cutoffs(r["shots"], r["budget"])
+        verdict = flag_and_check(tuple(r["board"]), r["counts"], cutoffs)
+        detections.append({**r, "cutoffs_at_run": r["cutoffs"], "lines_at_run": r["lines"],
+                           "profile": _profile_summary(profile), "cutoffs": list(cutoffs),
+                           "candidates": list(verdict.candidates), "rejected": list(verdict.rejected),
+                           "lines": sorted(verdict.lines), "winner": verdict.winner})
+    return Job(detections, job.calibration, job.submitted)
 
 
 @dataclass(frozen=True)
