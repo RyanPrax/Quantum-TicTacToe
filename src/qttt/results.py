@@ -272,4 +272,7 @@ def _profile_summary(profile) -> dict | None:
         "readout": [list(row) for row in profile.readout],
         "line_qubits": None if profile.line_qubits is None else list(profile.line_qubits),
         "calibration_id": profile.calibration_id,
+        "bit_factors": list(profile.bit_factors),
+        "no_win_shares": None if profile.no_win_shares is None else list(profile.no_win_shares),
+        "no_win_shots": profile.no_win_shots,
     }

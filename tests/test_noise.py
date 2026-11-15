@@ -5,6 +5,7 @@ import pytest
 from qttt.backends import IdealBackend, get_backend
 from qttt.board import O, X, boards_by_win_count, classical_winning_lines
 from qttt.noise import (
+    CALIBRATION_CIRCUITS,
     NoiseProfile,
     calibrate,
     fit_epsilon,
@@ -140,7 +141,7 @@ def test_fit_epsilon_needs_a_winner():
 
 def test_calibrate_on_ideal_backend():
     profile, out = calibrate(IdealBackend(seed=4903), shots=2048)
-    assert len(out.counts) == NUM_LINES + 1
+    assert len(out.counts) == CALIBRATION_CIRCUITS
     for i in range(NUM_LINES):
         assert profile.readout[i][i] == pytest.approx(1.0)
     assert profile.epsilon == pytest.approx(0.0, abs=0.05)
@@ -154,3 +155,62 @@ def test_from_backend_uses_published_data():
     assert 0 < profile.epsilon < 1
     assert profile.line_qubits == backend.metrics(backend.search_template("player")).line_qubits
     assert profile.readout != IDENTITY
+
+
+# --- signal per line: bit factors and measured no-win shares ---
+
+def test_all_bit_factors_one_is_the_even_scatter_model():
+    profile = _profile(0.3, readout_matrix_from_errors([(0.02, 0.05)] * 3))
+    for winners in [(), (6,), (0, 3)]:
+        ideal = ideal_line_probabilities(winners)
+        mixed = [0.7 * p + 0.3 / 8 for p in ideal]
+        old = [sum(profile.readout[m][p] * mixed[p] for p in range(8)) for m in range(8)]
+        assert profile.predicted_for(winners) == pytest.approx(old)
+
+
+def test_bit_factors_lower_the_signal_of_lines_with_that_bit():
+    profile = NoiseProfile(0.4, IDENTITY, "test", bit_factors=(1.0, 1.0, 0.5))
+    assert profile.signal(3) == pytest.approx(0.6)  # 011: bit 2 is 0
+    assert profile.signal(4) == pytest.approx(0.3)  # 100
+    assert profile.predicted_for({4})[4] < profile.predicted_for({3})[3]
+    assert sum(profile.predicted_for({4, 7})) == pytest.approx(1.0)
+
+
+def test_calibration_recovers_epsilon_and_bit_factors():
+    from qttt.noise import CALIBRATION_BOARDS
+
+    truth = NoiseProfile(0.4, IDENTITY, "truth", bit_factors=(0.95, 0.9, 0.8))
+    known = [(board, _expected_counts(truth, classical_winning_lines(board, player)))
+             for board, player in CALIBRATION_BOARDS]
+    readout_counts = [[10**6 if m == p else 0 for m in range(8)] for p in range(8)]
+    fitted = NoiseProfile.from_calibration(readout_counts, known)
+    assert fitted.epsilon == pytest.approx(0.4, abs=1e-4)
+    assert fitted.bit_factors == pytest.approx((0.95, 0.9, 0.8), abs=1e-4)
+    assert fitted.no_win_shots == 10**6 and fitted.no_win_shares == pytest.approx([1 / 8] * 8, abs=1e-5)
+
+
+def test_a_bit_no_calibration_board_has_keeps_factor_one():
+    from qttt.noise import CALIBRATION_BOARD
+
+    known = [(CALIBRATION_BOARD, _expected_counts(_profile(0.3), {0}))]  # line 0 only: every bit is 0
+    fitted = NoiseProfile.from_calibration([[10**6 if m == p else 0 for m in range(8)] for p in range(8)], known)
+    assert fitted.bit_factors == (1.0, 1.0, 1.0)
+    assert fitted.epsilon == pytest.approx(0.3, abs=1e-4)
+
+
+def test_measured_no_win_shares_raise_that_lines_cutoff():
+    shares = (0.125,) * 3 + (0.16,) + (0.125,) * 4
+    even = _profile(0.3)
+    measured = NoiseProfile(0.3, IDENTITY, "test", no_win_shares=shares, no_win_shots=1024)
+    assert measured.cutoffs(1024, 0.1)[3] > even.cutoffs(1024, 0.1)[3]
+    assert measured.q0[3] == pytest.approx(0.16 + 2 * (0.16 * 0.84 / 1024) ** 0.5)
+    assert measured.q0[0] >= even.q0[0]
+
+
+def test_profiles_saved_before_bit_factors_still_load():
+    from qttt.results import _profile_summary
+
+    saved = _profile_summary(_profile(0.3))
+    for key in ("bit_factors", "no_win_shares", "no_win_shots"):
+        saved.pop(key)
+    assert NoiseProfile.from_record(saved) == _profile(0.3)

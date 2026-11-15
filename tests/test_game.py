@@ -7,6 +7,7 @@ import pytest
 from qttt.backends import IdealBackend
 from qttt.board import EMPTY, O, X
 from qttt.game import FIRST_CHECK_TURN, Game, computer_move, verify_games
+from qttt.noise import CALIBRATION_CIRCUITS
 
 SEED = 4903
 
@@ -103,7 +104,7 @@ def test_calibration_runs_once_per_game():
     backend = _CountingBackend(seed=SEED)
     game = Game(backend=backend, shots=256, profile="calibrate")
     _play(game, [0, 1, 2, 4, 3, 5, 7, 6, 8])  # a draw: 5 checks
-    assert backend.jobs == [9 + 1, 1, 1, 1, 1]  # calibration only in the first job
+    assert backend.jobs == [CALIBRATION_CIRCUITS + 1, 1, 1, 1, 1]  # calibration only in the first job
     profiles = {c.result.profile for c in game.checks if c.result}
     assert len(profiles) == 1
 

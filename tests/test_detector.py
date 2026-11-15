@@ -27,6 +27,7 @@ from qttt.detector import (
     resume_job,
     run_search,
 )
+from qttt.noise import CALIBRATION_CIRCUITS
 from qttt.results import RunStore
 from qttt.stats import binomial_cutoff, binomial_log_pmf, binomial_tail
 
@@ -363,7 +364,7 @@ def test_calibrate_runs_in_the_same_job():
     backend = _CountingBackend(seed=SEED)
     cases = [(TOP_ROW, X), (DOUBLE_WIN, X)]
     results = detect_winners(cases, shots=2048, backend=backend, profile="calibrate")
-    assert backend.jobs == [NUM_LINES + 1 + len(cases)]  # readout circuits, known board, the boards
+    assert backend.jobs == [CALIBRATION_CIRCUITS + len(cases)]  # readout circuits, known boards, the boards
     profile = results[0].profile
     assert profile.source == "calibration:ideal"
     assert profile.line_qubits == results[0].run.metrics.line_qubits
@@ -456,7 +457,7 @@ def test_counts_are_saved_before_a_crash_and_the_job_can_be_finished(tmp_path, m
     monkeypatch.undo()
 
     results = resume_job(submitted["id"], IdealBackend(seed=SEED), store)
-    assert backend.jobs == [NUM_LINES + 1 + 2]  # resuming runs nothing
+    assert backend.jobs == [CALIBRATION_CIRCUITS + 2]  # resuming runs nothing
     assert [r.lines for r in results] == [r.lines for r in expected]
     assert results[0].cutoffs == expected[0].cutoffs
     (calibration,) = store.load("calibration")

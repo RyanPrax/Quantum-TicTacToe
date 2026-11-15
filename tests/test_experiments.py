@@ -8,6 +8,7 @@ import pytest
 from qttt.backends import IdealBackend
 from qttt.board import classical_winning_lines
 from qttt.experiments import collect, sample_boards, summarize
+from qttt.noise import CALIBRATION_CIRCUITS
 from qttt.results import RunStore
 
 SEED = 4903
@@ -92,7 +93,7 @@ def test_collect_splits_into_jobs(tmp_path):
     backend = Counting(seed=SEED)
     collect(sample_boards(5, seed=SEED), backend, shots=64, store=RunStore(tmp_path), boards_per_job=2,
             profile="calibrate")
-    assert backend.jobs == [9 + 2, 9 + 2, 9 + 1]  # each job calibrates its own boards
+    assert backend.jobs == [CALIBRATION_CIRCUITS + 2, CALIBRATION_CIRCUITS + 2, CALIBRATION_CIRCUITS + 1]
 
 
 def test_default_tag_is_a_timestamp(tmp_path):

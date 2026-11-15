@@ -16,8 +16,8 @@ from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, get_backend
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS
 from qttt.experiments import MIXES, collect, sample_boards, summarize
 from qttt.grover import VARIANTS
+from qttt.noise import CALIBRATION_CIRCUITS
 from qttt.results import LABELS, RunStore
-from qttt.stats import NUM_LINES
 
 
 def main(argv=None, read=input):
@@ -48,7 +48,7 @@ def main(argv=None, read=input):
                           ancilla=ANCILLA_FLAGS[args.ancilla],
                           sampler_options={} if args.no_error_suppression else None)
     jobs = -(-len(boards) // (args.boards_per_job or len(boards)))
-    calibration = 0 if args.backend == "ideal" else (NUM_LINES + 1) * jobs
+    calibration = 0 if args.backend == "ideal" else CALIBRATION_CIRCUITS * jobs
     circuits = len(boards) + calibration
     split = ", ".join(f"{label}: {sum(b.label == label for b in boards)}" for label in LABELS)
     print(f"{len(boards)} boards ({split})"

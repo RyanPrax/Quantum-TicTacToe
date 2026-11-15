@@ -2,13 +2,24 @@
 
 A profile models what one round measures as
 
-    measured = A · [(1 − ε) · ideal + ε / 8]
+    measured = A · p,    p_w = s_w · ideal_w + (1 − s_w) / 8  for each winning line w,
 
-where ideal is the noiseless line distribution for the board, ε is the share of
-shots that gate noise scatters evenly, and A[measured][prepared] is the 8×8
-readout matrix of the 3 line qubits. From that it gives each line its own
-cutoff (lines that noise pushes up need more counts to be flagged) and
-predicts how often wins are missed before any hardware time is spent.
+with the losing lines sharing the rest evenly. ideal is the noiseless line
+distribution for the board, A[measured][prepared] is the 8×8 readout matrix of
+the 3 line qubits, and s_w is the share of the winner's signal that survives:
+
+    s_w = (1 − ε) · f₀^bit₀(w) · f₁^bit₁(w) · f₂^bit₂(w)
+
+ε is the share of shots gate noise scatters, and each bit of the line index
+that is 1 keeps a factor f_b of the signal. The winning line sets the signal,
+not the rest of the board (scripts/noise_analysis.py on
+results/noise_bias_boards.json), and these 4 numbers predict it at the
+shot-noise floor. With every f = 1 this is measured = A · [(1 − ε) · ideal + ε / 8].
+
+From that each line gets its own cutoff, high enough that a losing line rarely
+reaches it, including the highest shares measured on boards without a winner,
+and the profile predicts how often wins are missed before any hardware time is
+spent.
 
 Profiles come from no noise (from_ideal), from a backend's published
 calibration data (from_backend), or from calibration runs on the backend
@@ -20,16 +31,42 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from math import asin, sin, sqrt
 
+import numpy as np
+
 from qttt.backends import Backend
 from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.stats import NUM_LINES, binomial_below, binomial_both_below, binomial_cutoff
 
 _MIN_Q0 = 1e-12  # keeps binomial_cutoff's q0 strictly inside (0, 1)
+_MIN_SIGNAL = 1e-3  # a board whose fitted signal is at or below 0 still gets a finite log
+_MAX_FACTOR = 2.0  # a bit factor above 1 is possible (noise), but not without bound
 
-# A legal single-win board, used to measure ε when calibrating.
+# Legal boards with known answers, measured in every calibrating job. X wins
+# lines 0, 1, 2 and 4 (index 000, 001, 010, 100): one board per bit of the line
+# index plus the base, which fixes ε and the 3 bit factors. The two no-win
+# boards (X just moved on turn 5, O on turn 6) measure how high losing lines get.
 CALIBRATION_BOARD = (X, X, X,
                      O, O, EMPTY,
                      EMPTY, EMPTY, EMPTY)
+CALIBRATION_BOARDS = (
+    (CALIBRATION_BOARD, X),
+    ((O, O, EMPTY,
+      X, X, X,
+      EMPTY, EMPTY, EMPTY), X),
+    ((O, O, EMPTY,
+      EMPTY, EMPTY, EMPTY,
+      X, X, X), X),
+    ((O, X, O,
+      EMPTY, X, EMPTY,
+      EMPTY, X, EMPTY), X),
+    ((X, O, EMPTY,
+      EMPTY, O, X,
+      EMPTY, X, EMPTY), X),
+    ((X, O, X,
+      O, X, EMPTY,
+      EMPTY, EMPTY, O), O),
+)
+NO_WIN_MARGIN = 2.0  # standard errors added to a measured no-win share before it sets a cutoff
 
 
 def ideal_line_probabilities(winners: Sequence[int] | set[int]) -> tuple[float, ...]:
@@ -76,7 +113,7 @@ class MissRates:
 
 @dataclass(frozen=True)
 class NoiseProfile:
-    """Gate noise ε and readout matrix A for the 3 line qubits of one backend."""
+    """Gate noise ε, the signal factor per line-index bit, and readout matrix A for one backend's line qubits."""
     epsilon: float
     readout: tuple[tuple[float, ...], ...]  # A[measured][prepared]
     source: str
@@ -84,12 +121,20 @@ class NoiseProfile:
     log10_esp: float | None = field(default=None, compare=False)
     # The saved calibration record this profile was fitted from, so every run that reuses it links back to it.
     calibration_id: str | None = field(default=None, compare=False)
+    bit_factors: tuple[float, float, float] = (1.0, 1.0, 1.0)  # signal kept per 1 in bit 0, 1, 2 of the line
+    # Highest share each line reached on the calibration boards without a winner, and their shots per board.
+    no_win_shares: tuple[float, ...] | None = None
+    no_win_shots: int = 0
 
     def __post_init__(self):
         if not 0 <= self.epsilon <= 1:
             raise ValueError(f"epsilon must be in [0, 1], got {self.epsilon}")
         if len(self.readout) != NUM_LINES or any(len(row) != NUM_LINES for row in self.readout):
             raise ValueError("readout must be an 8x8 matrix")
+        if len(self.bit_factors) != 3 or not all(f > 0 for f in self.bit_factors):
+            raise ValueError(f"bit_factors must be 3 positive numbers, got {self.bit_factors}")
+        if self.no_win_shares is not None and (len(self.no_win_shares) != NUM_LINES or self.no_win_shots < 1):
+            raise ValueError("no_win_shares needs one share per line and no_win_shots of at least 1")
 
     # --- construction ---
 
@@ -120,18 +165,26 @@ class NoiseProfile:
                          line_qubits: tuple[int, ...] | None = None) -> "NoiseProfile":
         """From calibration runs: readout_counts[i] are the counts after preparing line index i.
 
-        ε is fitted from `known` (board, counts) pairs, boards whose winning
-        lines are known, unless given directly.
+        ε and the bit factors are fitted from the single-win boards in `known`
+        ((board, counts) pairs; see fit_line_signal), unless ε is given, and the
+        no-win boards in it set no_win_shares.
         """
         if len(readout_counts) != NUM_LINES:
             raise ValueError(f"need counts for all {NUM_LINES} prepared line indices")
         columns = [[c / sum(counts) for c in counts] for counts in readout_counts]
         readout = tuple(tuple(columns[p][m] for p in range(NUM_LINES)) for m in range(NUM_LINES))
+        factors = (1.0, 1.0, 1.0)
         if epsilon is None:
             if not known:
                 raise ValueError("pass known boards to fit epsilon, or epsilon itself")
-            epsilon = fit_epsilon(readout, known)
-        return cls(epsilon=epsilon, readout=readout, source=source, line_qubits=line_qubits)
+            epsilon, factors = fit_line_signal(readout, known)
+        no_win = [counts for board, counts in known if not _winners(board)]
+        shares = shots = None
+        if no_win:
+            shares = tuple(max(c[i] / sum(c) for c in no_win) for i in range(NUM_LINES))
+            shots = min(sum(c) for c in no_win)
+        return cls(epsilon=epsilon, readout=readout, source=source, line_qubits=line_qubits, bit_factors=factors,
+                   no_win_shares=shares, no_win_shots=shots or 0)
 
     @classmethod
     def from_record(cls, saved: dict) -> "NoiseProfile":
@@ -139,7 +192,10 @@ class NoiseProfile:
         return cls(epsilon=saved["epsilon"], readout=tuple(tuple(row) for row in saved["readout"]),
                    source=saved["source"],
                    line_qubits=None if saved["line_qubits"] is None else tuple(saved["line_qubits"]),
-                   calibration_id=saved.get("calibration_id"))
+                   calibration_id=saved.get("calibration_id"),
+                   bit_factors=tuple(saved.get("bit_factors") or (1.0, 1.0, 1.0)),
+                   no_win_shares=None if saved.get("no_win_shares") is None else tuple(saved["no_win_shares"]),
+                   no_win_shots=saved.get("no_win_shots") or 0)
 
     # --- the model ---
 
@@ -148,15 +204,34 @@ class NoiseProfile:
         mixed = [(1 - self.epsilon) * p + self.epsilon / NUM_LINES for p in ideal]
         return tuple(sum(self.readout[m][p] * mixed[p] for p in range(NUM_LINES)) for m in range(NUM_LINES))
 
+    def signal(self, line: int) -> float:
+        """Share of a winning line's signal that survives: (1 − ε) times its bits' factors, at most 1."""
+        kept = 1 - self.epsilon
+        for b, factor in enumerate(self.bit_factors):
+            if (line >> b) & 1:
+                kept *= factor
+        return min(1.0, kept)
+
     def predicted_for(self, winners: Sequence[int] | set[int]) -> tuple[float, ...]:
-        return self.predicted(ideal_line_probabilities(winners))
+        """Measured line distribution for a board with these winning lines (see the module docstring)."""
+        winners = set(winners)
+        ideal = ideal_line_probabilities(winners)
+        mixed = [0.0] * NUM_LINES
+        for w in winners:
+            mixed[w] = self.signal(w) * ideal[w] + (1 - self.signal(w)) / NUM_LINES
+        rest = (1 - sum(mixed)) / (NUM_LINES - len(winners))
+        mixed = [mixed[i] if i in winners else rest for i in range(NUM_LINES)]
+        return tuple(sum(self.readout[m][p] * mixed[p] for p in range(NUM_LINES)) for m in range(NUM_LINES))
 
     @property
     def q0(self) -> tuple[float, ...]:
         """Per line, the most a single shot can land on it when it is not a winner.
 
         Worst case over no win, every single win and every legal double win,
-        so the false-flag budget holds on every board, not just on average.
+        so the false-flag budget holds on every board, not just on average. A
+        profile measured with no-win boards also takes, per line, the highest
+        share measured there plus NO_WIN_MARGIN standard errors: the model
+        spreads noise evenly over losing lines, and the device may not.
         """
         cases = [()] + [(w,) for w in range(NUM_LINES)] + list(legal_double_wins())
         worst = [0.0] * NUM_LINES
@@ -165,6 +240,10 @@ class NoiseProfile:
             for i in range(NUM_LINES):
                 if i not in winners:
                     worst[i] = max(worst[i], probs[i])
+        if self.no_win_shares is not None:
+            n = self.no_win_shots
+            worst = [max(w, q + NO_WIN_MARGIN * sqrt(q * (1 - q) / n)) for w, q in zip(worst, self.no_win_shares,
+                                                                                        strict=True)]
         return tuple(min(1 - _MIN_Q0, max(_MIN_Q0, q)) for q in worst)
 
     def cutoffs(self, shots: int, budget: float) -> tuple[int, ...]:
@@ -257,7 +336,39 @@ def fit_epsilon(readout, known: Sequence[tuple[Sequence[str], Sequence[int]]]) -
     return min(1.0, max(0.0, 1 - num / den))
 
 
-DEFAULT_KNOWN = ((CALIBRATION_BOARD, X),)
+def _winners(board) -> set[int]:
+    return classical_winning_lines(board, X) | classical_winning_lines(board, O)
+
+
+def board_signal(readout, board, counts) -> float:
+    """Least-squares share of signal s that survives on one board with known winners (see fit_epsilon)."""
+    return 1 - fit_epsilon(readout, [(board, counts)])
+
+
+def fit_line_signal(readout, known: Sequence[tuple[Sequence[str], Sequence[int]]]) -> tuple[float, tuple]:
+    """ε and the 3 bit factors from boards with a single known winning line, given the readout matrix.
+
+    Each board's surviving signal s (board_signal) is fitted, then
+    log s = log(1 − ε) + Σ_b bit_b(line) · log f_b by least squares over the
+    boards. A bit that is 0 on every board's line keeps the factor 1: nothing
+    measures it. Boards with no or two winners are not used here.
+    """
+    rows = [(min(_winners(board)), board_signal(readout, board, counts)) for board, counts in known
+            if len(_winners(board)) == 1]
+    if not rows:
+        raise ValueError("known boards carry no signal: include at least one board with a single winner")
+    bits = [b for b in range(3) if any((line >> b) & 1 for line, _ in rows)]
+    design = np.array([[1.0] + [float((line >> b) & 1) for b in bits] for line, _ in rows])
+    target = np.log([min(1.0, max(_MIN_SIGNAL, s)) for _, s in rows])
+    coef, *_ = np.linalg.lstsq(design, target, rcond=None)
+    factors = [1.0, 1.0, 1.0]
+    for b, c in zip(bits, coef[1:], strict=True):
+        factors[b] = float(min(_MAX_FACTOR, np.exp(c)))
+    return min(1.0, max(0.0, 1 - float(np.exp(coef[0])))), tuple(factors)
+
+
+DEFAULT_KNOWN = CALIBRATION_BOARDS
+CALIBRATION_CIRCUITS = NUM_LINES + len(DEFAULT_KNOWN)  # readout circuits plus the known boards, per job
 
 
 def calibration_circuits(backend: Backend, variant: str = "player",
@@ -289,7 +400,8 @@ def calibrate(backend: Backend, variant: str = "player", shots: int = 1024,
     """Measure a profile on the backend itself, in one job.
 
     Runs the 8 readout circuits and the search on `known` (board, player)
-    pairs, then fits the readout matrix and ε. Works on any provider.
+    pairs, then fits the readout matrix, ε, the bit factors and the no-win
+    shares. Works on any provider.
     detect_winners does this inside its own job by default; use calibrate on
     its own to check a backend before running anything else. Returns
     (profile, job output).

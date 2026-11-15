@@ -17,6 +17,7 @@ from qttt.board import EMPTY, LINE_NAMES, O, X
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS
 from qttt.game import STRATEGIES, Game, TurnCheck, Verification, computer_move, verify_games
 from qttt.grover import VARIANTS
+from qttt.noise import CALIBRATION_CIRCUITS
 from qttt.results import RunStore
 
 BAR_WIDTH = 30
@@ -159,7 +160,8 @@ def verify(games: list[Game], name: str, backend, args, store, read, write) -> i
         return 0
     if is_real_device(name) and not args.yes:
         folder = store.root if store else "results"
-        write(f"Send {checks} board(s) and 9 calibration circuits to {name} as one job, {args.shots} shots each? "
+        write(f"Send {checks} board(s) and {CALIBRATION_CIRCUITS} calibration circuits to {name} as one job,"
+              f" {args.shots} shots each? "
               f"It waits in the provider's queue, uses your plan's time, and is saved to {folder}/.")
         try:
             answer = read("Continue? [y/N] ")
