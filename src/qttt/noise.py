@@ -136,7 +136,7 @@ class NoiseProfile:
     # The saved calibration record this profile was fitted from, so every run that reuses it links back to it.
     calibration_id: str | None = field(default=None, compare=False)
     bit_factors: tuple[float, float, float] = (1.0, 1.0, 1.0)  # signal kept per 1 in bit 0, 1, 2 of the line
-    # Highest share each line reached on the calibration boards without a winner, and their shots per board.
+    # Each line's share over all calibration boards without a winner, pooled, and those boards' total shots.
     no_win_shares: tuple[float, ...] | None = None
     no_win_shots: int = 0
 
@@ -195,8 +195,8 @@ class NoiseProfile:
         no_win = [counts for board, counts in known if not _winners(board)]
         shares = shots = None
         if no_win:
-            shares = tuple(max(c[i] / sum(c) for c in no_win) for i in range(NUM_LINES))
-            shots = min(sum(c) for c in no_win)
+            shots = sum(sum(c) for c in no_win)
+            shares = tuple(sum(c[i] for c in no_win) / shots for i in range(NUM_LINES))
         return cls(epsilon=epsilon, readout=readout, source=source, line_qubits=line_qubits, bit_factors=factors,
                    no_win_shares=shares, no_win_shots=shots or 0)
 

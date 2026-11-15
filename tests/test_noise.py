@@ -186,7 +186,8 @@ def test_calibration_recovers_epsilon_and_bit_factors():
     fitted = NoiseProfile.from_calibration(readout_counts, known)
     assert fitted.epsilon == pytest.approx(0.4, abs=1e-4)
     assert fitted.bit_factors == pytest.approx((0.95, 0.9, 0.8), abs=1e-4)
-    assert fitted.no_win_shots == 10**6 and fitted.no_win_shares == pytest.approx([1 / 8] * 8, abs=1e-5)
+    assert fitted.no_win_shots == 2 * 10**6  # both no-win boards, pooled
+    assert fitted.no_win_shares == pytest.approx([1 / 8] * 8, abs=1e-5)
 
 
 def test_a_bit_no_calibration_board_has_keeps_factor_one():
@@ -214,3 +215,16 @@ def test_profiles_saved_before_bit_factors_still_load():
     for key in ("bit_factors", "no_win_shares", "no_win_shots"):
         saved.pop(key)
     assert NoiseProfile.from_record(saved) == _profile(0.3)
+
+
+def test_no_win_shares_are_pooled_over_the_no_win_boards():
+    from qttt.noise import CALIBRATION_BOARD
+
+    readout_counts = [[10**6 if m == p else 0 for m in range(8)] for p in range(8)]
+    no_win = ("X", "O", " ", " ", "O", "X", " ", "X", " ")
+    high = [100, 100, 100, 100, 100, 100, 100, 300]  # line 7 high on one board only
+    even = [125] * 8
+    known = [(CALIBRATION_BOARD, _expected_counts(_profile(0.3), {0})), (no_win, high), (no_win, even)]
+    fitted = NoiseProfile.from_calibration(readout_counts, known)
+    assert fitted.no_win_shots == 2000
+    assert fitted.no_win_shares[7] == pytest.approx(425 / 2000)  # the pooled mean, not the highest board
