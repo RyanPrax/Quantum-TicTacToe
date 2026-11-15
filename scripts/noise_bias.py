@@ -2,6 +2,8 @@
 
     python scripts/noise_bias.py                                   # 3 free-plan fakes, every mode
     python scripts/noise_bias.py --devices fake_kingston --modes scheduled --shots 4096
+    python scripts/noise_bias.py --devices fake_kingston fake_fez --modes scheduled --boards-per-line 4 \
+        --out results/noise_bias_boards.json
 
 The noise model assumes gate noise scatters shots evenly over the lines, with
 one ε for every line, fitted on one known board (winning line 0). This runs,
@@ -38,7 +40,8 @@ from qiskit.transpiler import PassManager
 from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDynamicalDecoupling
 
 from qttt.backends import DEFAULT_TRANSPILE_SEEDS, IBMBackend, get_backend
-from qttt.board import O, X, boards_by_win_count, classical_winning_lines
+from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
+from qttt.experiments import sample_boards
 from qttt.noise import DEFAULT_KNOWN, calibration_circuits, profile_from_calibration
 from qttt.results import provenance
 from qttt.stats import NUM_LINES
@@ -62,16 +65,29 @@ def last_player(board):
     return X if board.count(X) > board.count(O) else O
 
 
-def choose_boards(seed):
-    """(name, board, player, winning lines) for every case, drawn with a fixed seed."""
+def choose_boards(seed, boards_per_line=1):
+    """(name, board, player, winning lines) for every case, drawn with a fixed seed.
+
+    With one board per line (the first run, results/noise_bias.json) each line's board is drawn at random.
+    With more, single wins come from sample_boards' balanced draw, so each line gets boards_per_line boards
+    with alternating last mover and spread turns, which separates line effects from board effects, and
+    the no-win boards cover every (last mover, turn).
+    """
     rng = random.Random(seed)
     groups = boards_by_win_count()
     cases = []
-    for line in range(NUM_LINES):
-        options = [b for b in groups[1] if classical_winning_lines(b, last_player(b)) == {line}]
-        cases.append((f"single {line}", rng.choice(options), {line}))
-    for i, board in enumerate(rng.sample(groups[0], 2)):
-        cases.append((f"no win {i}", board, set()))
+    if boards_per_line == 1:
+        for line in range(NUM_LINES):
+            options = [b for b in groups[1] if classical_winning_lines(b, last_player(b)) == {line}]
+            cases.append((f"single {line}", rng.choice(options), {line}))
+        for i, board in enumerate(rng.sample(groups[0], 2)):
+            cases.append((f"no win {i}", board, set()))
+    else:
+        singles = sample_boards(seed=seed, mix={"single_win": NUM_LINES * boards_per_line})
+        for b in sorted(singles, key=lambda b: (min(b.lines), b.player, b.turn)):
+            cases.append((f"single {min(b.lines)}", b.board, set(b.lines)))
+        for i, b in enumerate(sample_boards(seed=seed, mix={"no_win": 5})):
+            cases.append((f"no win {i}", b.board, set()))
     for pair in DOUBLE_PAIRS:
         options = [b for b in groups[2] if classical_winning_lines(b, last_player(b)) == set(pair)]
         cases.append((f"double {pair[0]},{pair[1]}", rng.choice(options), set(pair)))
@@ -99,6 +115,7 @@ def measure(device, mode, cases, shots, seed, transpile_seeds):
     for (name, board, player, lines), counts in zip(cases, out.counts[len(extra):], strict=True):
         predicted = profile.predicted_for(lines)
         rows.append({"case": name, "board": "".join(board), "player": player, "winning_lines": sorted(lines),
+                     "turn": 9 - board.count(EMPTY), "set_qubits": board.count(player),  # board qubits in |1>
                      "counts": list(counts), "predicted": list(predicted)})
     return {"device": device, "mode": mode, "shots": shots, "seed": seed, "transpile_seeds": transpile_seeds,
             "ancilla": metrics.ancilla, "two_qubit_gates": metrics.two_qubit_gates, "log10_esp": metrics.log10_esp,
@@ -131,11 +148,13 @@ def main(argv=None):
     parser.add_argument("--shots", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=4903, help="seed for choosing boards, compiling and simulating")
     parser.add_argument("--transpile-seeds", type=int, default=DEFAULT_TRANSPILE_SEEDS)
+    parser.add_argument("--boards-per-line", type=int, default=1,
+                        help="single-win boards per line (default 1; more separates line from board effects)")
     parser.add_argument("--out", default="results/noise_bias.json", help="where to save every count (JSON)")
     args = parser.parse_args(argv)
 
     provenance()  # cached now, so every result records the code as it was at start, not after later edits
-    cases = choose_boards(args.seed)
+    cases = choose_boards(args.seed, args.boards_per_line)
     results = []
     for device in args.devices:
         for mode in args.modes:
