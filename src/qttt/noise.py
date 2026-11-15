@@ -133,6 +133,14 @@ class NoiseProfile:
             epsilon = fit_epsilon(readout, known)
         return cls(epsilon=epsilon, readout=readout, source=source, line_qubits=line_qubits)
 
+    @classmethod
+    def from_record(cls, saved: dict) -> "NoiseProfile":
+        """A profile from its summary in a RunStore record (the "profile" field of most records)."""
+        return cls(epsilon=saved["epsilon"], readout=tuple(tuple(row) for row in saved["readout"]),
+                   source=saved["source"],
+                   line_qubits=None if saved["line_qubits"] is None else tuple(saved["line_qubits"]),
+                   calibration_id=saved.get("calibration_id"))
+
     # --- the model ---
 
     def predicted(self, ideal: Sequence[float]) -> tuple[float, ...]:

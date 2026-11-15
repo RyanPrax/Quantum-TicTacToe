@@ -1,7 +1,9 @@
 """Permanent, append-only store of every run.
 
-Each run is one JSON object on its own line in <root>/runs.jsonl, and the
-transpiled circuit it ran is saved as <root>/circuits/<id>.qpy. A job leaves a
+Each run is one JSON object on its own line in <root>/runs.jsonl. Circuits
+are saved as <root>/circuits/<id>.qpy: a job's record holds the compiled
+template every board in it shares, and each of its detections holds only its
+board's few gates, so load_circuit() rebuilds the exact circuit. A job leaves a
 "job" record as soon as it is submitted and another with its raw counts as soon
 as they are back, so a crash or a lost kernel never loses a job that ran
 (finish one with qttt.detector.resume_job). Records are
@@ -24,6 +26,7 @@ from pathlib import Path
 
 from qiskit import qpy
 
+from qttt.backends import with_board_prep
 from qttt.board import O, X, classical_winning_lines
 
 SCHEMA_VERSION = 1
@@ -51,11 +54,13 @@ class RunStore:
         self.circuits_dir = self.root / "circuits"
 
     def save_job_submitted(self, job_id, backend, template, *, cases, variant, shots, budget, known, profile,
-                           tag: str | None = None) -> str:
+                           published=None, tag: str | None = None) -> str:
         """Record a job the moment it is submitted, with everything resume_job needs to finish it.
 
         template is the backend's transpiled empty-board search circuit; profile is
-        the fixed profile the cutoffs will come from, or None when the job calibrates.
+        the fixed profile the cutoffs will come from, or None when the job calibrates;
+        published is the profile from the device's published calibration data at
+        submit time, on the same circuit, for comparing with what the job measures.
         """
         record = {
             "kind": "job",
@@ -69,6 +74,7 @@ class RunStore:
             "known": [{"board": "".join(board), "player": player} for board, player in known],
             "calibrate": profile is None,
             "profile": _profile_summary(profile),
+            "published_profile": _profile_summary(published),
             "backend": _backend_fields(backend),
         }
         return self._append(record, template)
@@ -128,6 +134,12 @@ class RunStore:
             "profile": _profile_summary(result.profile),
             **_run_fields(run, backend),
         }
+        prep = None if run.transpiled is None else (run.transpiled.metadata or {}).get("board_prep")
+        if job_record is not None and prep is not None:
+            # Every board in a job shares the template saved with the job record: save only this board's gates.
+            record["template_record"] = job_record
+            record["board_prep"] = prep
+            return self._append(record, None)
         return self._append(record, run.transpiled)
 
     def save_calibration(self, profile, output, backend, known, variant: str = "player", tag: str | None = None,
@@ -162,7 +174,13 @@ class RunStore:
         return [r for r in records if (kind is None or r["kind"] == kind) and (tag is None or r.get("tag") == tag)]
 
     def load_circuit(self, record: dict):
-        """The transpiled circuit saved with a record, or None."""
+        """The transpiled circuit saved with a record, or None.
+
+        A detection from a job is rebuilt from the job's template and its own board gates.
+        """
+        if record.get("template_record"):
+            (job,) = [r for r in self.load("job") if r["id"] == record["template_record"]]
+            return with_board_prep(self.load_circuit(job), record["board_prep"])
         if not record.get("circuit_file"):
             return None
         with (self.root / record["circuit_file"]).open("rb") as f:

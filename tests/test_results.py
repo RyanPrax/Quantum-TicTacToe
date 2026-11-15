@@ -120,3 +120,36 @@ def test_records_never_hold_a_token(store, monkeypatch):
     monkeypatch.setenv("QISKIT_IBM_TOKEN", "secret-token-value")
     detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
     assert "secret-token-value" not in store.runs_file.read_text()
+
+
+def test_a_job_saves_one_circuit_and_rebuilds_every_board(store):
+    from qttt.detector import detect_winners
+
+    boards = [TOP_ROW, (O, O, O, X, X, " ", X, " ", " "), (X, O, X, O, X, O, " ", " ", X)]
+    players = [X, O, X]
+    cases = list(zip(boards, players, strict=True))
+    results = detect_winners(cases, shots=16, backend=IdealBackend(seed=SEED), store=store)
+    assert len(list(store.circuits_dir.iterdir())) == 1  # the job's template only
+    for record, result in zip(store.load("detection"), results, strict=True):
+        assert "circuit_file" not in record and record["board_prep"]
+        assert store.load_circuit(record) == result.run.transpiled
+
+
+def test_board_gates_with_parameters_round_trip(tmp_path):
+    # fake_rochester has no native X, so each board X becomes gates with angles.
+    from qttt.backends import get_backend, with_board_prep
+
+    rochester = get_backend("fake_rochester", seed=SEED)
+    circuit = rochester.search_circuit("player", TOP_ROW, X)
+    assert any(params for _, params, _ in circuit.metadata["board_prep"])
+    assert with_board_prep(rochester.search_template("player"), circuit.metadata["board_prep"]) == circuit
+
+
+def test_job_keeps_the_published_profile_and_profiles_round_trip(store):
+    from qttt.noise import NoiseProfile
+
+    result = detect_winner(TOP_ROW, player=X, shots=16, backend=IdealBackend(seed=SEED), store=store)
+    (submitted,) = [r for r in store.load("job") if r["status"] == "submitted"]
+    published = NoiseProfile.from_record(submitted["published_profile"])
+    assert published.line_qubits == result.run.metrics.line_qubits  # measured on the job's own circuit
+    assert NoiseProfile.from_record(store.load("detection")[0]["profile"]) == result.profile

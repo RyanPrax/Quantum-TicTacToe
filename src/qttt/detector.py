@@ -155,12 +155,17 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
         profile = _fixed_profile(profile, backend, variant)
         _check_line_qubits(profile, transpiled)
 
+    # The device's published calibration data at submit time, kept with the job to compare against later.
+    published = NoiseProfile.from_backend(backend, variant) if store is not None else None
     submitted = []
+
     def on_submit(job_id):
         if store is not None:
             submitted.append(store.save_job_submitted(
                 job_id, backend, backend.search_template(variant), cases=cases, variant=variant, shots=shots,
-                budget=budget, known=known, profile=None if calibrating else profile, tag=tag))
+                budget=budget, known=known, profile=None if calibrating else profile, published=published,
+                tag=tag))
+
     out = backend.run(extra + transpiled, shots, on_submit)
     job_record = submitted[0] if submitted else None
     try:
@@ -202,11 +207,7 @@ def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike =
     else:
         out = backend.fetch(submitted["job_id"])
         store.save_job_output(submitted["id"], out)
-    saved = submitted["profile"]
-    profile = None if saved is None else NoiseProfile(
-        epsilon=saved["epsilon"], readout=tuple(tuple(row) for row in saved["readout"]), source=saved["source"],
-        line_qubits=None if saved["line_qubits"] is None else tuple(saved["line_qubits"]),
-        calibration_id=saved.get("calibration_id"))
+    profile = None if submitted["profile"] is None else NoiseProfile.from_record(submitted["profile"])
     return _finish(cases, variant, submitted["shots"], submitted["budget"], backend, out, circuits, transpiled,
                    len(extra), profile, known, line_qubits, store, submitted["tag"], submitted["id"])
 

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.circuit import CircuitInstruction
+from qiskit.circuit.library import get_standard_gate_name_mapping
 from qiskit.transpiler import PassManager, generate_preset_pass_manager
 from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDelay
 from qiskit_aer import AerSimulator
@@ -139,11 +140,9 @@ class Backend(ABC):
         for logical in flips:
             prep.x(layout[logical])
         prep = self._native(prep)
-        tqc = template.copy()
-        for inst in reversed(prep.data):
-            tqc.data.insert(0, CircuitInstruction(inst.operation, tuple(tqc.qubits[prep.find_bit(q).index]
-                                                                         for q in inst.qubits)))
-        return tqc
+        gates = [[inst.operation.name, [float(p) for p in inst.operation.params],
+                  [prep.find_bit(q).index for q in inst.qubits]] for inst in prep.data]
+        return with_board_prep(template, gates)
 
     def _native(self, circuit: QuantumCircuit) -> QuantumCircuit:
         """Single-qubit gates rewritten into the backend's own gate set, on the same qubits."""
@@ -414,6 +413,21 @@ def read_dotenv(start: str | os.PathLike | None = None) -> dict[str, str]:
             value = value[1:-1]
         settings[key] = value
     return settings
+
+
+def with_board_prep(template: QuantumCircuit, gates: Sequence) -> QuantumCircuit:
+    """The template with a board's gates in front, each [name, params, physical qubits].
+
+    The gates are kept in the circuit's metadata ("board_prep"), so a store can
+    save them instead of the whole circuit and rebuild it exactly from the
+    template (see RunStore.load_circuit).
+    """
+    standard = get_standard_gate_name_mapping()
+    tqc = template.copy()
+    for name, params, qubits in reversed(gates):
+        tqc.data.insert(0, CircuitInstruction(type(standard[name])(*params), tuple(tqc.qubits[q] for q in qubits)))
+    tqc.metadata = {**(template.metadata or {}), "board_prep": [list(g) for g in gates]}
+    return tqc
 
 
 def two_qubit_count(tqc: QuantumCircuit) -> int:
