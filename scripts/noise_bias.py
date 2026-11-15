@@ -134,6 +134,7 @@ def main(argv=None):
     parser.add_argument("--out", default="results/noise_bias.json", help="where to save every count (JSON)")
     args = parser.parse_args(argv)
 
+    provenance()  # cached now, so every result records the code as it was at start, not after later edits
     cases = choose_boards(args.seed)
     results = []
     for device in args.devices:
