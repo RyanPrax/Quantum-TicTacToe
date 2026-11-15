@@ -5,17 +5,20 @@
     python scripts/noise_bias.py --devices fake_kingston fake_fez --modes scheduled --boards-per-line 4 \
         --out results/noise_bias_boards.json
 
-The noise model assumes gate noise scatters shots evenly over the lines, with
-one ε for every line, fitted on one known board (winning line 0). This runs,
-per device and timing mode, one job holding the model's calibration circuits
-(8 readout circuits and that known board) and:
+This runs, per device and timing mode, one job holding the calibration
+circuits detect_winners uses (the 8 readout circuits and the known boards in
+qttt.noise.CALIBRATION_BOARDS) and:
 
 - one single-win board for each of the 8 lines,
 - no-win boards,
 - one double-win board for each of a few line pairs,
 
 then prints each board's measured share on its winning lines (or on each line,
-with no winner) next to what the model fitted in the same job predicts.
+with no winner) next to what the profile fitted in the same job predicts. The
+runs saved before the per-bit calibration (results/noise_bias.json,
+noise_bias_boards.json, noise_bias_ancilla.json, noise_bias_score.json) used
+one known board (winning line 0) and one ε for every line, as their commits'
+code shows.
 
 Timing modes for the simulator:
   plain      no idle decay: qubits only decay during gates
