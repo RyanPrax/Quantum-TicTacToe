@@ -93,7 +93,27 @@ def test_real_device_plays_on_its_snapshot_and_asks_before_sending(monkeypatch):
     assert code == 1
     assert "playing on fake_kingston, then verifying every board on ibm_kingston" in out
     assert "Not sent." in out
-    assert names == ["fake_kingston"]  # never connected to the real device
+    assert names == ["fake_kingston", "ibm_kingston"]  # connected up front (no job sent), so a bad account fails early
+
+
+def test_missing_account_fails_before_the_games(monkeypatch):
+    def fake_get_backend(name, seed=None, **kwargs):
+        if name == "ibm_kingston":
+            raise RuntimeError("no IBM account")
+        return IdealBackend(seed=seed)
+
+    monkeypatch.setattr(cli, "get_backend", fake_get_backend)
+    monkeypatch.setattr(cli, "fake_twin", lambda name: "fake_kingston")
+    with pytest.raises(RuntimeError, match="no IBM account"):
+        _run(["--backend", "ibm_kingston"], [])  # raises before asking for a single move
+
+
+def test_confirmation_names_the_save_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "get_backend", lambda name, seed=None, **kwargs: IdealBackend(seed=seed))
+    monkeypatch.setattr(cli, "fake_twin", lambda name: "fake_kingston")
+    _, out = _run(["--backend", "ibm_kingston", "--shots", "64", "--save", str(tmp_path / "mine")],
+                  ["0", "3", "1", "4", "2", "n"])
+    assert f"saved to {tmp_path / 'mine'}/" in out
 
 
 def test_nothing_to_verify():

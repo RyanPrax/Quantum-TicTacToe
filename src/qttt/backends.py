@@ -209,7 +209,8 @@ class IdealBackend(Backend):
         self._simulator = AerSimulator()
 
     def transpile(self, circuit):
-        tqc = transpile(circuit, self._simulator, seed_transpiler=self.seed)
+        # As on IBM devices: the template must stay valid for any board, so the compiler may not assume |0>.
+        tqc = transpile(circuit, self._simulator, seed_transpiler=self.seed, qubits_initially_zero=False)
         tqc.metadata = {**(tqc.metadata or {}), "transpile_seed": self.seed}
         return tqc
 

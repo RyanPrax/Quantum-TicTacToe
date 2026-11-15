@@ -98,6 +98,8 @@ def main(argv: list[str] | None = None, *, read: Callable[[str], str] = input,
 
     store = RunStore(args.save) if args.save else None
     play_backend = _backend(play_name, args)
+    # Connect to the verify device now, so a missing account fails before the games, not after.
+    verify_backend = _backend(verify_name, args) if verify_name is not None else None
     rng = random.Random(args.seed)
     write(f"Quantum tic-tac-toe: {args.variant} oracle on {play_backend.name}, {args.shots} shots per check.")
     write("Enter a cell number 0-8 to move, q to quit.\n")
@@ -113,8 +115,8 @@ def main(argv: list[str] | None = None, *, read: Callable[[str], str] = input,
         if not finished:
             break
 
-    if verify_name is not None:
-        return verify(games, verify_name, args, store, read, write)
+    if verify_backend is not None:
+        return verify(games, verify_name, verify_backend, args, store, read, write)
     return 0
 
 
@@ -147,14 +149,14 @@ def play_game(game: Game, args, rng: random.Random, read, write) -> bool:
     return True
 
 
-def verify(games: list[Game], name: str, args, store, read, write) -> int:
+def verify(games: list[Game], name: str, backend, args, store, read, write) -> int:
     checks = sum(1 for g in games for c in g.checks if c.result is not None)
     if checks == 0:
         write("Nothing to verify: no game reached turn 5.")
         return 0
     if is_real_device(name) and not args.yes:
         write(f"Send {checks} board(s) and 9 calibration circuits to {name} as one job, {args.shots} shots each? "
-              "It waits in the provider's queue, uses your plan's time, and is saved to results/.")
+              f"It waits in the provider's queue, uses your plan's time, and is saved to {store.root if store else 'results'}/.")
         try:
             answer = read("Continue? [y/N] ")
         except EOFError:
@@ -163,7 +165,6 @@ def verify(games: list[Game], name: str, args, store, read, write) -> int:
             write("Not sent.")
             return 1
     write(f"Verifying {checks} board(s) on {name} in one job...")
-    backend = _backend(name, args)
     verifications = verify_games(games, backend, shots=args.shots, budget=args.budget, store=store)
     write(render_verification(verifications, len(games) > 1))
     return 0
