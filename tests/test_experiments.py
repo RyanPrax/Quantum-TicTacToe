@@ -135,3 +135,40 @@ def test_collect_nothing(tmp_path):
     assert not (tmp_path / "runs.jsonl").exists()
     with pytest.raises(ValueError, match="boards_per_job"):
         collect(sample_boards(1, seed=SEED), IdealBackend(seed=SEED), store=RunStore(tmp_path), boards_per_job=0)
+
+
+def test_choose_shots_calibrates_once_and_saves_it(tmp_path):
+    from qttt.experiments import choose_shots
+
+    store = RunStore(tmp_path)
+    shots, profile = choose_shots(IdealBackend(seed=SEED), store=store, tag="auto")
+    assert 64 <= shots <= 1024  # a perfect simulator needs few shots
+    assert shots == profile.shots_needed(0.01, profile_budget(), 4096)
+    (calibration,) = store.load("calibration", tag="auto")
+    assert len(calibration["known"]) == len(calibration["profile"]["readout"]) + 2  # 8 single wins, 2 no-win
+
+
+def profile_budget():
+    from qttt.detector import DEFAULT_BUDGET
+    return DEFAULT_BUDGET
+
+
+def test_choose_shots_stops_at_the_cap(tmp_path, monkeypatch):
+    from qttt.experiments import choose_shots
+    from qttt.noise import NoiseProfile
+
+    monkeypatch.setattr(NoiseProfile, "shots_needed", lambda self, *a, **k: None)  # some line undetectable
+    shots, _ = choose_shots(IdealBackend(seed=SEED), max_shots=2048, store=RunStore(tmp_path))
+    assert shots == 2048
+
+
+def test_collect_script_chooses_shots(tmp_path, capsys):
+    path = Path(__file__).resolve().parent.parent / "scripts" / "collect.py"
+    spec = importlib.util.spec_from_file_location("collect_script", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    assert script.main(["--n", "3", "--seed", "1", "--shots", "auto", "--store", str(tmp_path), "--tag", "a"]) == 0
+    out = capsys.readouterr().out
+    assert "Choosing shots" in out and "shots per board" in out
+    store = RunStore(tmp_path)
+    assert len(store.load("calibration", tag="a")) == 1 and len(store.load("detection", tag="a")) == 3

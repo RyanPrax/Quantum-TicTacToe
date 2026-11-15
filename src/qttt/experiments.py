@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from qttt.backends import Backend
 from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS, DetectionResult, detect_winners
-from qttt.noise import NoiseProfile
+from qttt.noise import NoiseProfile, calibrate, known_boards
 from qttt.results import LABELS, RunStore
 
 MIXES = ("balanced", "natural")
@@ -126,6 +126,35 @@ def _stratum_order(keys):
     return sorted(keys, key=lambda key: (key[1:], key[:1])) if keys and len(keys[0]) == 2 else list(keys)
 
 
+DEFAULT_MAX_SHOTS = 4096  # the most shots per board choose_shots asks for, to protect a plan's device time
+MISS_TARGET = 0.01  # choose_shots aims for at most this chance of missing a win
+
+
+def choose_shots(backend: Backend, variant: str = "player", budget: float = DEFAULT_BUDGET,
+                 max_shots: int = DEFAULT_MAX_SHOTS, store: RunStore | None = None,
+                 tag: str | None = None) -> tuple[int, NoiseProfile]:
+    """Shots per board for a batch, from a short calibration job on the backend itself.
+
+    Runs only the calibration circuits (DEFAULT_SHOTS each), saves that
+    calibration to store (default results/: it used device time), and returns
+    the shots its profile predicts for at most MISS_TARGET misses within the
+    false-flag budget, capped at max_shots, with the profile. When some line's
+    winner cannot be told from a loser at any shot count up to the cap, the cap
+    is returned; profile.miss_rates(shots, budget) shows what that costs.
+    """
+    if store is None:
+        store = RunStore()
+    known = known_boards(variant)
+    profile, out = calibrate(backend, variant, DEFAULT_SHOTS, known)
+    store.save_calibration(profile, out, backend, known, variant, tag)
+    return profile.shots_needed(MISS_TARGET, budget, max_shots) or max_shots, profile
+
+
+def default_tag() -> str:
+    """A batch name from the current time, e.g. collect-20261115T093000Z."""
+    return "collect-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
 def collect(boards: Sequence[LabeledBoard], backend: Backend, variant: str = "player", shots: int = DEFAULT_SHOTS,
             budget: float = DEFAULT_BUDGET, profile: NoiseProfile | str = "auto",
             store: RunStore | None = None, tag: str | None = None,
@@ -143,7 +172,7 @@ def collect(boards: Sequence[LabeledBoard], backend: Backend, variant: str = "pl
     if store is None:
         store = RunStore()
     if tag is None:
-        tag = "collect-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        tag = default_tag()
     size = boards_per_job or len(boards)
     results = []
     for start in range(0, len(boards), size):

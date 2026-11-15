@@ -14,10 +14,30 @@ import sys
 
 from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, get_backend
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS
-from qttt.experiments import MIXES, collect, sample_boards, summarize
+from qttt.experiments import (
+    DEFAULT_MAX_SHOTS,
+    MISS_TARGET,
+    MIXES,
+    choose_shots,
+    collect,
+    default_tag,
+    sample_boards,
+    summarize,
+)
 from qttt.grover import VARIANTS
 from qttt.noise import CALIBRATION_CIRCUITS
 from qttt.results import LABELS, RunStore
+
+
+def _confirm(read) -> bool:
+    if read("This uses your plan's device time. Continue? [y/N] ").strip().lower() in ("y", "yes"):
+        return True
+    print("Not sent.")
+    return False
+
+
+def _shots(text):
+    return text if text == "auto" else int(text)
 
 
 def main(argv=None, read=input):
@@ -34,7 +54,11 @@ def main(argv=None, read=input):
                         help="extra qubit for a cheaper oracle: auto keeps the better compiled circuit (default)")
     parser.add_argument("--no-error-suppression", action="store_true",
                         help="real devices only: run without the default dynamical decoupling and gate twirling")
-    parser.add_argument("--shots", type=int, default=DEFAULT_SHOTS)
+    parser.add_argument("--shots", type=_shots, default=DEFAULT_SHOTS,
+                        help=f'shots per board, or "auto": as many as a short calibration job says are needed for'
+                             f' at most 1%% misses, up to --max-shots (default {DEFAULT_SHOTS})')
+    parser.add_argument("--max-shots", type=int, default=DEFAULT_MAX_SHOTS,
+                        help=f"the most shots per board --shots auto may choose (default {DEFAULT_MAX_SHOTS})")
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET)
     parser.add_argument("--boards-per-job", type=int, default=None,
                         help="split into jobs of this many boards, each with its own calibration (default: one job)")
@@ -47,21 +71,34 @@ def main(argv=None, read=input):
     backend = get_backend(args.backend, seed=args.seed, transpile_seeds=args.transpile_seeds,
                           ancilla=ANCILLA_FLAGS[args.ancilla],
                           sampler_options={} if args.no_error_suppression else None)
+    store = RunStore(args.store)
+    tag = args.tag or default_tag()
+    ask = not backend.simulated and not args.yes
+    shots = args.shots
+    if shots == "auto":
+        print(f"Choosing shots: one calibration job on {backend.name},"
+              f" {CALIBRATION_CIRCUITS} circuits x {DEFAULT_SHOTS} shots.")
+        if ask and not _confirm(read):
+            return 1
+        shots, profile = choose_shots(backend, args.variant, args.budget, args.max_shots, store, tag)
+        capped = profile.shots_needed(MISS_TARGET, args.budget, args.max_shots) is None
+        print(f"Measured ε = {profile.epsilon:.3f}, bit factors {', '.join(f'{f:.3f}' for f in profile.bit_factors)}:"
+              f" {shots} shots per board" + (f" (the cap; at {shots} shots the worst win is missed"
+                                            f" {profile.miss_rates(shots, args.budget).worst:.0%} of the time)"
+                                            if capped else f" for at most {MISS_TARGET:.0%} misses") + ".")
+
     jobs = -(-len(boards) // (args.boards_per_job or len(boards)))
     calibration = 0 if args.backend == "ideal" else CALIBRATION_CIRCUITS * jobs
     circuits = len(boards) + calibration
     split = ", ".join(f"{label}: {sum(b.label == label for b in boards)}" for label in LABELS)
     print(f"{len(boards)} boards ({split})"
-          f" + {calibration} calibration circuits on {backend.name}, {jobs} job(s), {args.shots} shots each"
-          f" = {circuits * args.shots:,} shots.")
-    if not backend.simulated and not args.yes:
-        if read("This uses your plan's device time. Continue? [y/N] ").strip().lower() not in ("y", "yes"):
-            print("Not sent.")
-            return 1
+          f" + {calibration} calibration circuits on {backend.name}, {jobs} job(s), {shots} shots each"
+          f" = {circuits * shots:,} shots.")
+    if ask and not _confirm(read):
+        return 1
 
-    store = RunStore(args.store)
-    results = collect(boards, backend, variant=args.variant, shots=args.shots, budget=args.budget,
-                      store=store, tag=args.tag, boards_per_job=args.boards_per_job)
+    results = collect(boards, backend, variant=args.variant, shots=shots, budget=args.budget,
+                      store=store, tag=tag, boards_per_job=args.boards_per_job)
     profile = results[0].profile
     print(f"Saved {len(results)} results to {store.runs_file} (tag {store.load('detection')[-1]['tag']}).")
     if profile is not None and profile.source != "ideal":
