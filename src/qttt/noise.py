@@ -18,7 +18,6 @@ itself (calibrate), which works on any provider.
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
-from itertools import combinations
 from math import asin, sin, sqrt
 
 from qttt.backends import Backend
@@ -271,7 +270,7 @@ def profile_from_calibration(backend: Backend, counts: Sequence[Sequence[int]], 
     """Fit a profile from the counts of calibration_circuits(), in the same order."""
     return NoiseProfile.from_calibration(
         counts[:NUM_LINES],
-        known=[(board, c) for (board, _), c in zip(known, counts[NUM_LINES:NUM_LINES + len(known)])],
+        known=[(board, c) for (board, _), c in zip(known, counts[NUM_LINES:NUM_LINES + len(known)], strict=True)],
         source=f"calibration:{backend.name}",
         line_qubits=line_qubits,
     )

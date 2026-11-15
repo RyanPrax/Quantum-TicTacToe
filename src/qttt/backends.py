@@ -284,7 +284,8 @@ class IBMBackend(Backend):
             on_submit(None)
             if self.schedule:
                 target = self.backend.target
-                circuits = PassManager([ALAPScheduleAnalysis(target=target), PadDelay(target=target)]).run(list(circuits))
+                scheduler = PassManager([ALAPScheduleAnalysis(target=target), PadDelay(target=target)])
+                circuits = scheduler.run(list(circuits))
             sampler = AerSampler.from_backend(self.backend, seed=self.seed)
             result = sampler.run(list(circuits), shots=shots).result()
             return [_line_counts(r) for r in result], None
@@ -339,8 +340,8 @@ class IBMBackend(Backend):
                 "sampler_options": self.sampler_options, "ancilla": self.ancilla, "schedule": self.schedule}
 
 
-def get_backend(name: str, *, seed: int | None = None, transpile_seeds: int = 1,
-                sampler_options: dict | None = None, instance: str | None = None, ancilla: bool | str = "auto") -> Backend:
+def get_backend(name: str, *, seed: int | None = None, transpile_seeds: int = 1, sampler_options: dict | None = None,
+                instance: str | None = None, ancilla: bool | str = "auto") -> Backend:
     """Backend by name: "ideal", a fake IBM backend such as "fake_berlin", or a real IBM device."""
     if name == "ideal":
         return IdealBackend(seed, ancilla)

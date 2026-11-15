@@ -29,3 +29,15 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["slow: long simulations (22-qubit circuits, every board, fake-backend noise); skip with -m \"not slow\""]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["docs", "notebooks/00_class_submission.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E741"]  # O is the player, not a confusable zero
+
+[tool.ruff.lint.per-file-ignores]
+# Plot grids zip axes with data of other lengths, and display lines may run long.
+"*.ipynb" = ["B905", "E501"]

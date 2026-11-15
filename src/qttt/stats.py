@@ -7,27 +7,32 @@ from qttt.board import WIN_LINES
 NUM_LINES = len(WIN_LINES)
 
 
-def _binomial_log_pmf(j, n, q):
+def binomial_log_pmf(j, n, q):
     """log P(K = j) for K ~ Binomial(n, q)"""
-    return lgamma(n+1) - lgamma(j+1) - lgamma(n-j+1) + j*log(q) + (n-j)*log(1-q)
+    return lgamma(n + 1) - lgamma(j + 1) - lgamma(n - j + 1) + j * log(q) + (n - j) * log(1 - q)
 
 
-def _binomial_pmf(j, n, q):
+def binomial_pmf(j, n, q):
     """P(K = j), also when q is exactly 0 or 1."""
-    if not 0 <= j <= n: return 0.0
-    if q <= 0: return 1.0 if j == 0 else 0.0
-    if q >= 1: return 1.0 if j == n else 0.0
-    return exp(_binomial_log_pmf(j, n, q))
+    if not 0 <= j <= n:
+        return 0.0
+    if q <= 0:
+        return 1.0 if j == 0 else 0.0
+    if q >= 1:
+        return 1.0 if j == n else 0.0
+    return exp(binomial_log_pmf(j, n, q))
 
 
-def _binomial_tail(k, n, q):
+def binomial_tail(k, n, q):
     """P(K >= k)"""
-    if k <= 0: return 1.0 # Every count is at least 0
-    if k > n: return 0.0 # A count cannot exceed the shot count
+    if k <= 0:
+        return 1.0  # every count is at least 0
+    if k > n:
+        return 0.0  # a count cannot exceed the shot count
 
     ret = 0.0
-    for j in range(k, n+1):
-        ret += exp(_binomial_log_pmf(j, n, q))
+    for j in range(k, n + 1):
+        ret += exp(binomial_log_pmf(j, n, q))
     return ret
 
 
@@ -42,7 +47,7 @@ def _central_range(n, q):
 def binomial_below(k, n, q):
     """P(K < k) for K ~ Binomial(n, q): the chance a line with per-shot probability q is not flagged."""
     lo, hi = _central_range(n, q)
-    return min(1.0, sum(_binomial_pmf(j, n, q) for j in range(lo, min(k, hi + 1))))
+    return min(1.0, sum(binomial_pmf(j, n, q) for j in range(lo, min(k, hi + 1))))
 
 
 def binomial_both_below(n, k1, p1, k2, p2):
@@ -56,7 +61,7 @@ def binomial_both_below(n, k1, p1, k2, p2):
     lo, hi = _central_range(n, p1)
     total = 0.0
     for a in range(lo, min(k1, hi + 1)):
-        total += _binomial_pmf(a, n, p1) * binomial_below(k2, n - a, c)
+        total += binomial_pmf(a, n, p1) * binomial_below(k2, n - a, c)
     return min(1.0, total)
 
 
@@ -67,17 +72,21 @@ def binomial_cutoff(shots=1024, budget=0.1, q0=1/8) -> int:
 
     With a per-line q0ᵢ this is also the per-line cutoff: P(K ≥ k | shots, q0ᵢ) ≤ budget / 8.
     """
-    if shots < 1: raise ValueError(f"shots must be at least 1, got {shots}")
-    if not 0 < budget <= NUM_LINES: raise ValueError(f"budget must be in (0, {NUM_LINES}], got {budget}")
-    if not 0 < q0 < 1: raise ValueError(f"q0 must be in (0, 1), got {q0}")
+    if shots < 1:
+        raise ValueError(f"shots must be at least 1, got {shots}")
+    if not 0 < budget <= NUM_LINES:
+        raise ValueError(f"budget must be in (0, {NUM_LINES}], got {budget}")
+    if not 0 < q0 < 1:
+        raise ValueError(f"q0 must be in (0, 1), got {q0}")
 
     # Walk down from k = shots + 1 (tail = 0), adding one term per step, and
     # stop before the tail goes over budget. O(shots) instead of O(shots²).
     k = shots + 1
     tail = 0.0
     while k > 0:
-        next_tail = tail + exp(_binomial_log_pmf(k-1, shots, q0))
-        if NUM_LINES * next_tail > budget: break
+        next_tail = tail + exp(binomial_log_pmf(k - 1, shots, q0))
+        if NUM_LINES * next_tail > budget:
+            break
         tail = next_tail
         k -= 1
     return k

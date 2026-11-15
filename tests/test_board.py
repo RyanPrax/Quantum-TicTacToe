@@ -3,8 +3,8 @@ import pytest
 from qttt.board import (
     EMPTY,
     LINE_NAMES,
-    O,
     WIN_LINES,
+    O,
     X,
     boards_by_win_count,
     classical_winning_lines,

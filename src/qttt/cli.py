@@ -155,8 +155,9 @@ def verify(games: list[Game], name: str, backend, args, store, read, write) -> i
         write("Nothing to verify: no game reached turn 5.")
         return 0
     if is_real_device(name) and not args.yes:
+        folder = store.root if store else "results"
         write(f"Send {checks} board(s) and 9 calibration circuits to {name} as one job, {args.shots} shots each? "
-              f"It waits in the provider's queue, uses your plan's time, and is saved to {store.root if store else 'results'}/.")
+              f"It waits in the provider's queue, uses your plan's time, and is saved to {folder}/.")
         try:
             answer = read("Continue? [y/N] ")
         except EOFError:
@@ -206,7 +207,8 @@ def render_check(check: TurnCheck) -> str:
             note = ""
         out.append(f"  {i} {LINE_NAMES[i]:36} {bar:{BAR_WIDTH}} {count:>5} / {result.cutoffs[i]:<5} {note}")
     if result.winner:
-        out.append(f"  Quantum check: {result.winner} wins on {sorted(result.lines)} (classical checks: {result.checks}).")
+        out.append(f"  Quantum check: {result.winner} wins on {sorted(result.lines)}"
+                   f" (classical checks: {result.checks}).")
     else:
         out.append(f"  Quantum check: no winner (classical checks: {result.checks}).")
     if check.missed:
@@ -232,7 +234,8 @@ def render_verification(verifications: list[Verification], show_game: bool) -> s
         verdict = "MISSED" if v.missed else "partly missed" if v.missed_lines else "correct"
         row = (f"{v.game + 1:<5}" if show_game else "") + (
             f"{v.check.turn:<4} {v.check.player:<6} {_lines(v.check.referee_lines):<12}"
-            f" {_lines(v.check.quantum_lines):<8} {_lines(v.result.lines):<10} {_lines(v.result.rejected):<9} {verdict}")
+            f" {_lines(v.check.quantum_lines):<8} {_lines(v.result.lines):<10} {_lines(v.result.rejected):<9}"
+            f" {verdict}")
         out.append("  " + row)
     wins = [v for v in verifications if v.check.referee_lines]
     missed = sum(v.missed for v in verifications)

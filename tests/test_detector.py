@@ -21,9 +21,6 @@ from qttt.detector import (
     NUM_LINES,
     DetectionResult,
     SearchRun,
-    _binomial_log_pmf,
-    _binomial_tail,
-    binomial_cutoff,
     detect_winner,
     detect_winners,
     flag_and_check,
@@ -31,6 +28,7 @@ from qttt.detector import (
     run_search,
 )
 from qttt.results import RunStore
+from qttt.stats import binomial_cutoff, binomial_log_pmf, binomial_tail
 
 SAMPLE_SIZE = 10
 SEED = 4903
@@ -58,7 +56,7 @@ def _winners(board):
 def _reference_cutoff(shots, budget, q0):
     """Straight from the definition: count up from 0 until within budget."""
     k = 0
-    while NUM_LINES * _binomial_tail(k, shots, q0) > budget:
+    while NUM_LINES * binomial_tail(k, shots, q0) > budget:
         k += 1
     return k
 
@@ -68,24 +66,24 @@ def _reference_cutoff(shots, budget, q0):
 def test_log_pmf_matches_direct_formula():
     for j in range(5):
         direct = math.comb(4, j) * (1 / 8) ** j * (7 / 8) ** (4 - j)
-        assert math.exp(_binomial_log_pmf(j, 4, 1 / 8)) == pytest.approx(direct)
+        assert math.exp(binomial_log_pmf(j, 4, 1 / 8)) == pytest.approx(direct)
 
 
 @pytest.mark.parametrize("n", [1, 10, 1024])
 def test_pmf_sums_to_one(n):
-    total = sum(math.exp(_binomial_log_pmf(j, n, 1 / 8)) for j in range(n + 1))
+    total = sum(math.exp(binomial_log_pmf(j, n, 1 / 8)) for j in range(n + 1))
     assert total == pytest.approx(1.0)
 
 
 def test_tail_small_example():
     # 4 shots: P(K >= 2) = 0.072 + 0.0068 + 0.00024
-    assert _binomial_tail(2, 4, 1 / 8) == pytest.approx(0.07886, abs=1e-5)
+    assert binomial_tail(2, 4, 1 / 8) == pytest.approx(0.07886, abs=1e-5)
 
 
 def test_tail_edges():
-    assert _binomial_tail(0, 10, 0.3) == 1.0
-    assert _binomial_tail(-1, 10, 0.3) == 1.0
-    assert _binomial_tail(11, 10, 0.3) == 0.0
+    assert binomial_tail(0, 10, 0.3) == 1.0
+    assert binomial_tail(-1, 10, 0.3) == 1.0
+    assert binomial_tail(11, 10, 0.3) == 0.0
 
 
 # --- binomial_cutoff ---
@@ -108,8 +106,8 @@ def test_cutoff_table_values(shots, budget, expected):
 @pytest.mark.parametrize("shots", [4, 100, 1024, 4096])
 def test_cutoff_is_smallest_within_budget(shots):
     k = binomial_cutoff(shots)
-    assert NUM_LINES * _binomial_tail(k, shots, 1 / 8) <= DEFAULT_BUDGET
-    assert NUM_LINES * _binomial_tail(k - 1, shots, 1 / 8) > DEFAULT_BUDGET
+    assert NUM_LINES * binomial_tail(k, shots, 1 / 8) <= DEFAULT_BUDGET
+    assert NUM_LINES * binomial_tail(k - 1, shots, 1 / 8) > DEFAULT_BUDGET
 
 
 @pytest.mark.parametrize("q0", [0.05, 1 / 8, 0.2])

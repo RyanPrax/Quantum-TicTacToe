@@ -17,7 +17,7 @@ import os
 import platform
 import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
@@ -146,7 +146,7 @@ class RunStore:
             "shots": sum(output.counts[0]),
             "readout_counts": [list(c) for c in output.counts[:num_lines]],
             "known": [{"board": "".join(board), "player": player, "counts": list(counts)}
-                      for (board, player), counts in zip(known, output.counts[num_lines:])],
+                      for (board, player), counts in zip(known, output.counts[num_lines:], strict=False)],
             "profile": _profile_summary(profile),
             "job_id": output.job_id,
             "backend": _backend_fields(backend),
@@ -173,7 +173,7 @@ class RunStore:
         record = {
             "id": record_id,
             "schema": SCHEMA_VERSION,
-            "created": datetime.now(timezone.utc).isoformat(),
+            "created": datetime.now(UTC).isoformat(),
             **record,
             "provenance": provenance(),
         }
@@ -204,7 +204,8 @@ def provenance() -> dict:
     return {"python": platform.python_version(), "packages": versions, **_git_state()}
 
 
-def _git_state(here: Path = Path(__file__).resolve().parent) -> dict:
+def _git_state(here: Path | None = None) -> dict:
+    here = here or Path(__file__).resolve().parent
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=here, capture_output=True,
                                 text=True, check=True, timeout=5).stdout.strip()

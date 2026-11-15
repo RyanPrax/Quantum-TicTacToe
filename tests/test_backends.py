@@ -94,7 +94,7 @@ def test_unknown_ancilla_setting_is_refused():
 
 def _assert_finds_winners(boards, circuits):
     results = AerSampler(seed=SEED).run(circuits, shots=4000).result()
-    for board, result in zip(boards, results):
+    for board, result in zip(boards, results, strict=True):
         counts = result.data.line_cl.get_counts()
         measured = [counts.get(format(i, "03b"), 0) / 4000 for i in range(8)]
         winners = classical_winning_lines(board, _last_player(board))

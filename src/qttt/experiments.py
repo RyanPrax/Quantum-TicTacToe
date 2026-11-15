@@ -12,7 +12,7 @@ import random
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from qttt.backends import Backend
 from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
@@ -143,7 +143,7 @@ def collect(boards: Sequence[LabeledBoard], backend: Backend, variant: str = "pl
     if store is None:
         store = RunStore()
     if tag is None:
-        tag = "collect-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        tag = "collect-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     size = boards_per_job or len(boards)
     results = []
     for start in range(0, len(boards), size):
@@ -164,7 +164,8 @@ class Summary:
     checks: Counter  # classical checks used
 
     def text(self) -> str:
-        rows = [f"{'label':11} {'boards':>6} {'win found':>10} {'all lines':>10} {'false flags':>11} {'checks/board':>12}"]
+        rows = [f"{'label':11} {'boards':>6} {'win found':>10} {'all lines':>10} {'false flags':>11}"
+                f" {'checks/board':>12}"]
         for label in LABELS:
             n = self.boards[label]
             if not n:
@@ -205,6 +206,6 @@ def _label_counts(n, mix, groups):
             if sum(counts) == n:
                 break
             counts[i] += 1
-        return dict(zip(LABELS, counts))
+        return dict(zip(LABELS, counts, strict=True))
     raise ValueError(f"Unknown mix {mix!r}; expected one of {MIXES} or a mapping of label to count.")
 

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from qiskit import QuantumCircuit
 from qiskit.circuit import QuantumRegister
 
-from qttt.board import O, PLAYERS, X
+from qttt.board import PLAYERS, O, X
 
 
 def cell_bits(cell: int) -> tuple[int, int]:

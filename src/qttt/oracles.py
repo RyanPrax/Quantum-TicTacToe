@@ -1,7 +1,7 @@
 """Grover oracles that phase-flip the line indices of winning lines."""
 
 from qiskit import QuantumCircuit
-from qiskit.circuit import Qubit, QuantumRegister
+from qiskit.circuit import QuantumRegister, Qubit
 from qiskit.synthesis import synth_mcx_1_clean_kg24
 
 from qttt.board import WIN_LINES

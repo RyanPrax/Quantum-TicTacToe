@@ -155,7 +155,7 @@ def verify_games(games: Sequence[Game], backend: Backend, shots: int = DEFAULT_S
         raise ValueError(f"All games must use the same variant to share one job, got {sorted(variants)}.")
     results = detect_winners([(check.board, check.player) for _, check in entries], variant=variants.pop(),
                              shots=shots, budget=budget, backend=backend, store=store)
-    return [Verification(i, check, result) for (i, check), result in zip(entries, results)]
+    return [Verification(i, check, result) for (i, check), result in zip(entries, results, strict=True)]
 
 
 def computer_move(board: Sequence[str], player: str, strategy: str = "rules",

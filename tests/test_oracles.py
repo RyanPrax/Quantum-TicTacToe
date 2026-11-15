@@ -216,7 +216,8 @@ def test_player_oracle_with_ancilla(board):
 
 def test_ancilla_is_returned_clean():
     board = SINGLE_WIN_SAMPLE[0]
-    qc = build_search_circuit("player", board, _last_player(board), ancilla=True).remove_final_measurements(inplace=False)
+    qc = build_search_circuit("player", board, _last_player(board), ancilla=True)
+    qc = qc.remove_final_measurements(inplace=False)
     ancilla = qc.find_bit(qc.qregs[2][0]).index
     assert Statevector(qc).probabilities([ancilla])[1] == pytest.approx(0.0, abs=1e-9)
 

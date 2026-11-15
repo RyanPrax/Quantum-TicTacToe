@@ -96,14 +96,15 @@ def measure(device, mode, cases, shots, seed, transpile_seeds):
     profile = profile_from_calibration(backend, out.counts, line_qubits, DEFAULT_KNOWN)
     metrics = backend.metrics(backend.search_template("player"))
     rows = []
-    for (name, board, player, lines), counts in zip(cases, out.counts[len(extra):]):
+    for (name, board, player, lines), counts in zip(cases, out.counts[len(extra):], strict=True):
         predicted = profile.predicted_for(lines)
         rows.append({"case": name, "board": "".join(board), "player": player, "winning_lines": sorted(lines),
                      "counts": list(counts), "predicted": list(predicted)})
     return {"device": device, "mode": mode, "shots": shots, "seed": seed, "transpile_seeds": transpile_seeds,
             "ancilla": metrics.ancilla, "two_qubit_gates": metrics.two_qubit_gates, "log10_esp": metrics.log10_esp,
             "line_qubits": list(metrics.line_qubits), "epsilon": profile.epsilon,
-            "readout": [list(r) for r in profile.readout], "calibration_counts": [list(c) for c in out.counts[:len(extra)]],
+            "readout": [list(r) for r in profile.readout],
+            "calibration_counts": [list(c) for c in out.counts[:len(extra)]],
             "seconds": round(time.time() - start), "provenance": provenance(), "rows": rows}
 
 

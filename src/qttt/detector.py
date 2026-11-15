@@ -11,10 +11,11 @@ from qttt.backends import Backend, CircuitMetrics, IdealBackend, JobOutput, line
 from qttt.board import EMPTY, WIN_LINES
 from qttt.noise import DEFAULT_KNOWN, NoiseProfile, calibration_circuits, profile_from_calibration
 from qttt.results import RunStore
-from qttt.stats import NUM_LINES, _binomial_log_pmf, _binomial_tail, binomial_cutoff  # noqa: F401 (re-exported)
+from qttt.stats import NUM_LINES
 
 DEFAULT_SHOTS = 1024
 DEFAULT_BUDGET = 0.1
+
 
 @dataclass(frozen=True)
 class SearchRun:
@@ -31,12 +32,14 @@ class SearchRun:
     def probabilities(self) -> tuple[float, ...]:
         return tuple(c / self.shots for c in self.counts)
 
+
 class Verdict(NamedTuple):
     """Flagged lines, the ones that failed the classical check, the confirmed lines and the winner."""
     candidates: tuple[int, ...]
     rejected: tuple[int, ...]
     lines: frozenset[int]
     winner: str | None
+
 
 @dataclass(frozen=True)
 class DetectionResult:
@@ -61,6 +64,7 @@ class DetectionResult:
     def checks(self) -> int:
         return len(self.candidates)
 
+
 def run_searches(cases: Sequence[tuple[Sequence[str], str | None]], variant="player", shots=DEFAULT_SHOTS,
                  backend: Backend | None = None) -> list[SearchRun]:
     """Run the search for several (board, player) pairs as one job."""
@@ -70,18 +74,22 @@ def run_searches(cases: Sequence[tuple[Sequence[str], str | None]], variant="pla
     out = backend.run(transpiled, shots)
     return _search_runs(out.counts, out.job_id, shots, circuits, transpiled, backend)
 
+
 def _search_circuits(cases, variant, backend):
     circuits = [backend.logical_search_circuit(variant, board, player) for board, player in cases]
     transpiled = [backend.search_circuit(variant, board, player) for board, player in cases]
     return circuits, transpiled
 
+
 def _search_runs(counts, job_id, shots, circuits, transpiled, backend):
     return [SearchRun(shots, c, qc, backend.name, job_id, tqc, backend.metrics(tqc))
-            for c, qc, tqc in zip(counts, circuits, transpiled)]
+            for c, qc, tqc in zip(counts, circuits, transpiled, strict=True)]
+
 
 def run_search(board, variant="player", player=None, shots=DEFAULT_SHOTS, backend=None) -> SearchRun:
     """Run the search circuit once and count how often each line index was measured."""
     return run_searches([(board, player)], variant, shots, backend)[0]
+
 
 def flag_and_check(board, counts, cutoffs) -> Verdict:
     """Flag lines with count >= their cutoff and confirm each one on the board.
@@ -89,7 +97,8 @@ def flag_and_check(board, counts, cutoffs) -> Verdict:
     cutoffs is one count for every line or 8 per-line counts. Only the cells of
     flagged lines are read.
     """
-    if isinstance(cutoffs, int): cutoffs = (cutoffs,) * NUM_LINES
+    if isinstance(cutoffs, int):
+        cutoffs = (cutoffs,) * NUM_LINES
     candidates = tuple(i for i in range(NUM_LINES) if counts[i] >= cutoffs[i])
     confirmed = []
     rejected = []
@@ -105,7 +114,9 @@ def flag_and_check(board, counts, cutoffs) -> Verdict:
     winner = board[WIN_LINES[min(lines)][0]] if lines else None
     return Verdict(candidates, rejected, lines, winner)
 
+
 PROFILE_MODES = ("auto", "calibrate", "published", "ideal")
+
 
 def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="player", shots=DEFAULT_SHOTS,
                    budget=DEFAULT_BUDGET, backend: Backend | None = None,
@@ -163,6 +174,7 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
                        f"finish it with resume_job({job_record!r}, backend, store).")
         raise
 
+
 def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike = "results") -> list[DetectionResult]:
     """Finish a job that detect_winners submitted but did not finish (lost kernel, crash, Ctrl-C).
 
@@ -171,7 +183,8 @@ def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike =
     provider by job id. The circuits are rebuilt from the template saved with the
     job, so the cutoffs and records come out as if the run had not stopped.
     """
-    if not isinstance(store, RunStore): store = RunStore(store)
+    if not isinstance(store, RunStore):
+        store = RunStore(store)
     submitted, done = store.job(job)
     if submitted["backend"]["name"] != backend.name:
         raise ValueError(f"job ran on {submitted['backend']['name']}, not {backend.name}")
@@ -197,8 +210,10 @@ def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike =
     return _finish(cases, variant, submitted["shots"], submitted["budget"], backend, out, circuits, transpiled,
                    len(extra), profile, known, line_qubits, store, submitted["tag"], submitted["id"])
 
+
 def _known(variant):
     return DEFAULT_KNOWN if variant == "player" else tuple((board, None) for board, _ in DEFAULT_KNOWN)
+
 
 def _open_store(store, backend):
     if store is None and not backend.simulated:
@@ -206,6 +221,7 @@ def _open_store(store, backend):
     if store is not None and not isinstance(store, RunStore):
         store = RunStore(store)
     return store
+
 
 def _fixed_profile(profile, backend, variant) -> NoiseProfile:
     """The profile for every mode except "calibrate", which needs the job's counts."""
@@ -215,12 +231,14 @@ def _fixed_profile(profile, backend, variant) -> NoiseProfile:
         return NoiseProfile.from_ideal()
     return profile
 
+
 def _check_line_qubits(profile, transpiled):
     for tqc in transpiled:
         qubits = line_qubits(tqc)
         if profile.line_qubits is not None and qubits != profile.line_qubits:
             raise ValueError(f"profile was measured on line qubits {profile.line_qubits}, "
                              f"but this run reads out on {qubits}")
+
 
 def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, num_extra, profile, known,
             line_qubits, store, tag, job_record) -> list[DetectionResult]:
@@ -237,7 +255,7 @@ def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, n
     cutoffs = profile.cutoffs(shots, budget)
 
     results = []
-    for (board, player), run in zip(cases, runs):
+    for (board, player), run in zip(cases, runs, strict=True):
         verdict = flag_and_check(board, run.counts, cutoffs)
         results.append(DetectionResult(
             board=tuple(board),
@@ -257,6 +275,7 @@ def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, n
         for result in results:
             store.save_detection(result, backend, profile.calibration_id, tag, job_record)
     return results
+
 
 def detect_winner(board, variant="player", player=None, shots=DEFAULT_SHOTS, budget=DEFAULT_BUDGET,
                   backend=None, profile="auto", store=None) -> DetectionResult:
