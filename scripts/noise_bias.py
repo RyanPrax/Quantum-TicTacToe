@@ -39,7 +39,7 @@ from qiskit.circuit.library import XGate
 from qiskit.transpiler import PassManager
 from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDynamicalDecoupling
 
-from qttt.backends import DEFAULT_TRANSPILE_SEEDS, IBMBackend, get_backend
+from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, IBMBackend, get_backend
 from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.experiments import sample_boards
 from qttt.noise import DEFAULT_KNOWN, calibration_circuits, profile_from_calibration
@@ -94,17 +94,17 @@ def choose_boards(seed, boards_per_line=1):
     return [(name, board, last_player(board), lines) for name, board, lines in cases]
 
 
-def make_backend(device, mode, seed, transpile_seeds):
+def make_backend(device, mode, seed, transpile_seeds, ancilla="auto"):
     if mode == "dd":
         plain = get_backend(device, seed=seed)
-        return _DDBackend(plain.backend, seed=seed, transpile_seeds=transpile_seeds, schedule=False)
-    backend = get_backend(device, seed=seed, transpile_seeds=transpile_seeds)
+        return _DDBackend(plain.backend, seed=seed, transpile_seeds=transpile_seeds, schedule=False, ancilla=ancilla)
+    backend = get_backend(device, seed=seed, transpile_seeds=transpile_seeds, ancilla=ancilla)
     backend.schedule = mode == "scheduled"
     return backend
 
 
-def measure(device, mode, cases, shots, seed, transpile_seeds):
-    backend = make_backend(device, mode, seed, transpile_seeds)
+def measure(device, mode, cases, shots, seed, transpile_seeds, ancilla="auto"):
+    backend = make_backend(device, mode, seed, transpile_seeds, ancilla)
     extra, line_qubits = calibration_circuits(backend, "player", DEFAULT_KNOWN)
     boards = [backend.search_circuit("player", board, player) for _, board, player, _ in cases]
     start = time.time()
@@ -119,7 +119,8 @@ def measure(device, mode, cases, shots, seed, transpile_seeds):
                      "counts": list(counts), "predicted": list(predicted)})
     return {"device": device, "mode": mode, "shots": shots, "seed": seed, "transpile_seeds": transpile_seeds,
             "ancilla": metrics.ancilla, "two_qubit_gates": metrics.two_qubit_gates, "log10_esp": metrics.log10_esp,
-            "line_qubits": list(metrics.line_qubits), "epsilon": profile.epsilon,
+            "line_qubits": list(metrics.line_qubits), "epsilon": profile.epsilon, "depth": metrics.depth,
+            "ancilla_setting": ancilla,
             "readout": [list(r) for r in profile.readout],
             "calibration_counts": [list(c) for c in out.counts[:len(extra)]],
             "seconds": round(time.time() - start), "provenance": provenance(), "rows": rows}
@@ -128,6 +129,7 @@ def measure(device, mode, cases, shots, seed, transpile_seeds):
 def report(result):
     shots = result["shots"]
     print(f"\n{result['device']}  {result['mode']}  ancilla {'yes' if result['ancilla'] else 'no'}"
+          f" ({result['ancilla_setting']}), depth {result['depth']}"
           f"  ε fitted {result['epsilon']:.3f}  ({result['seconds']} s)")
     print(f"  {'case':12} {'measured on winners':>20} {'predicted':>10}   no-win: share per line")
     for row in result["rows"]:
@@ -148,6 +150,8 @@ def main(argv=None):
     parser.add_argument("--shots", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=4903, help="seed for choosing boards, compiling and simulating")
     parser.add_argument("--transpile-seeds", type=int, default=DEFAULT_TRANSPILE_SEEDS)
+    parser.add_argument("--ancilla", nargs="+", choices=ANCILLA_FLAGS, default=["auto"],
+                        help="ancilla settings to run, each separately (default auto)")
     parser.add_argument("--boards-per-line", type=int, default=1,
                         help="single-win boards per line (default 1; more separates line from board effects)")
     parser.add_argument("--out", default="results/noise_bias.json", help="where to save every count (JSON)")
@@ -158,11 +162,13 @@ def main(argv=None):
     results = []
     for device in args.devices:
         for mode in args.modes:
-            results.append(measure(device, mode, cases, args.shots, args.seed, args.transpile_seeds))
-            report(results[-1])
-            out = Path(args.out)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(json.dumps(results, indent=1))  # saved after every run, so a stop loses nothing
+            for ancilla in args.ancilla:
+                results.append(measure(device, mode, cases, args.shots, args.seed, args.transpile_seeds,
+                                       ANCILLA_FLAGS[ancilla]))
+                report(results[-1])
+                out = Path(args.out)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(results, indent=1))  # saved after every run, so a stop loses nothing
     print(f"\nSaved to {args.out}")
     return 0
 
