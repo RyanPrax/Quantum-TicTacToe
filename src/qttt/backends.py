@@ -41,10 +41,12 @@ LINE_REGISTER = "line_cl"
 ANCILLA_SETTINGS = ("auto", True, False)
 ACCOUNT_PREFIX = "QISKIT_IBM_"  # the only .env keys read
 ANCILLA_FLAGS = {"auto": "auto", "on": True, "off": False}  # command-line spelling of each setting
-# Error suppression on real devices: dynamical decoupling fills idle gaps (the circuit is ~1000 layers deep),
-# gate twirling turns coherent two-qubit errors into random ones. Measurement twirling stays off: the in-job
-# readout matrix measures the readout bias, which twirling would change between calibration and boards.
-DEFAULT_SAMPLER_OPTIONS = {"dynamical_decoupling": {"enable": True, "sequence_type": "XY4"},
+# Error suppression for real devices, off unless asked for: dynamical decoupling fills idle gaps (the circuit is
+# ~1000 layers deep), gate twirling turns coherent two-qubit errors into random ones. On ibm_marrakesh and
+# ibm_kingston it left less signal on the winning line than running without it (scripts/hardware_check.py).
+# Measurement twirling stays off: the in-job readout matrix measures the readout bias, which twirling would
+# change between calibration and boards.
+ERROR_SUPPRESSION_OPTIONS = {"dynamical_decoupling": {"enable": True, "sequence_type": "XY4"},
                            "twirling": {"enable_gates": True}}
 DEFAULT_TRANSPILE_SEEDS = 5  # for the command-line tools; enough to find a good layout on IBM devices
 
@@ -274,8 +276,8 @@ class IBMBackend(Backend):
     best score is kept.
 
     sampler_options go to IBM's runtime Sampler on real devices; None (default)
-    means DEFAULT_SAMPLER_OPTIONS and {} means none. Simulated runs use no
-    Sampler options, so they record {}.
+    means none, ERROR_SUPPRESSION_OPTIONS turns on error suppression. Simulated
+    runs use no Sampler options, so they record {}.
 
     With schedule (default), simulated runs first pad every qubit's idle time
     with delays (ALAP scheduling), so the noise model's T1/T2 decay also acts
@@ -301,8 +303,7 @@ class IBMBackend(Backend):
         if self.simulated:
             self.sampler_options = {}
         else:
-            options = DEFAULT_SAMPLER_OPTIONS if sampler_options is None else sampler_options
-            self.sampler_options = copy.deepcopy(options)
+            self.sampler_options = copy.deepcopy(sampler_options or {})
         self.schedule = schedule
 
     def transpile(self, circuit):

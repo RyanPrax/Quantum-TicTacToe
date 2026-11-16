@@ -3,7 +3,7 @@
 import pytest
 
 from qttt import cli
-from qttt.backends import IdealBackend
+from qttt.backends import ERROR_SUPPRESSION_OPTIONS, IdealBackend
 
 
 class _NoSignalBackend(IdealBackend):
@@ -158,8 +158,8 @@ def test_default_transpile_seeds(monkeypatch):
     assert seen == [{"transpile_seeds": 5, "ancilla": "auto", "sampler_options": None}]
 
     seen.clear()
-    _run(["--no-error-suppression"], ["q"])
-    assert seen[0]["sampler_options"] == {}
+    _run(["--error-suppression"], ["q"])
+    assert seen[0]["sampler_options"] == ERROR_SUPPRESSION_OPTIONS
 
 
 def test_bad_transpile_seeds_are_refused():

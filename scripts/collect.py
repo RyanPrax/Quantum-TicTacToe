@@ -15,7 +15,7 @@ import sys
 
 from qiskit.providers.exceptions import QiskitBackendNotFoundError
 
-from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, get_backend
+from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, ERROR_SUPPRESSION_OPTIONS, get_backend
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS
 from qttt.experiments import (
     DEFAULT_MAX_SHOTS,
@@ -64,8 +64,8 @@ def main(argv=None, read=input):
                         help=f"compiler seeds tried on IBM devices, best kept (default {DEFAULT_TRANSPILE_SEEDS})")
     parser.add_argument("--ancilla", choices=ANCILLA_FLAGS, default="auto",
                         help="extra qubit for a cheaper oracle: auto keeps the better compiled circuit (default)")
-    parser.add_argument("--no-error-suppression", action="store_true",
-                        help="real devices only: run without the default dynamical decoupling and gate twirling")
+    parser.add_argument("--error-suppression", action="store_true",
+                        help="real devices only: run with dynamical decoupling and gate twirling (default: off)")
     parser.add_argument("--shots", type=_shots, default=DEFAULT_SHOTS,
                         help=f'shots per board, or "auto": as many as a short calibration job says are needed for'
                              f' at most 1%% misses, up to --max-shots (default {DEFAULT_SHOTS}); the batch still'
@@ -90,7 +90,7 @@ def main(argv=None, read=input):
     boards = sample_boards(args.n, seed=args.seed, mix=args.mix)
     backend = get_backend(args.backend, seed=args.seed, transpile_seeds=args.transpile_seeds,
                           ancilla=ANCILLA_FLAGS[args.ancilla],
-                          sampler_options={} if args.no_error_suppression else None)
+                          sampler_options=ERROR_SUPPRESSION_OPTIONS if args.error_suppression else None)
     store = RunStore(args.store)
     tag = args.tag or default_tag()
     ask = not backend.simulated and not args.yes

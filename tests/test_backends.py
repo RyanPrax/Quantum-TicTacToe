@@ -276,16 +276,16 @@ def test_simulated_runs_pad_idle_time_with_delays(berlin, monkeypatch, schedule)
     assert backend.options()["schedule"] is schedule
 
 
-def test_real_devices_default_to_error_suppression(berlin):
-    from qttt.backends import DEFAULT_SAMPLER_OPTIONS
+def test_error_suppression_is_off_unless_asked_for(berlin):
+    from qttt.backends import ERROR_SUPPRESSION_OPTIONS
 
-    real = IBMBackend(berlin.backend, simulate=False)
-    assert real.sampler_options == DEFAULT_SAMPLER_OPTIONS
+    assert IBMBackend(berlin.backend, simulate=False).sampler_options == {}
+    real = IBMBackend(berlin.backend, simulate=False, sampler_options=ERROR_SUPPRESSION_OPTIONS)
     assert real.sampler_options["dynamical_decoupling"] == {"enable": True, "sequence_type": "XY4"}
     real.sampler_options["twirling"]["enable_gates"] = False
-    assert DEFAULT_SAMPLER_OPTIONS["twirling"]["enable_gates"] is True  # each backend has its own copy
-    assert IBMBackend(berlin.backend, simulate=False, sampler_options={}).sampler_options == {}
-    assert berlin.sampler_options == {}  # simulated: Aer takes no Sampler options
+    assert ERROR_SUPPRESSION_OPTIONS["twirling"]["enable_gates"] is True  # each backend has its own copy
+    simulated = IBMBackend(berlin.backend, sampler_options=ERROR_SUPPRESSION_OPTIONS)
+    assert simulated.sampler_options == {}  # simulated: Aer takes no Sampler options
 
 
 def test_score_counts_gates_idle_time_and_readout(berlin):
