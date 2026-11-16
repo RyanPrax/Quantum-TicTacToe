@@ -1,0 +1,31 @@
+{
+  "shots": 1024,
+  "budget": 0.2,
+  "seed": 4903,
+  "devices": {
+    "kingston": {
+      "backend": "fake_kingston",
+      "calibration_date": "2026-04-15T09:15:15+02:00",
+      "epsilon_published": 0.5553860452217716,
+      "epsilon_measured": 0.5847832629242207,
+      "shots_needed_published": 64,
+      "shots_needed_measured": 256
+    },
+    "marrakesh": {
+      "backend": "fake_marrakesh",
+      "calibration_date": "2025-02-26T14:52:45-05:00",
+      "epsilon_published": 0.7060832613697019,
+      "epsilon_measured": 0.8446457053428429,
+      "shots_needed_published": 128,
+      "shots_needed_measured": 1536
+    },
+    "fez": {
+      "backend": "fake_fez",
+      "calibration_date": "2025-02-26T15:16:25-05:00",
+      "epsilon_published": 0.7583178547876706,
+      "epsilon_measured": 0.8838000646827318,
+      "shots_needed_published": 192,
+      "shots_needed_measured": 7616
+    }
+  }
+}
