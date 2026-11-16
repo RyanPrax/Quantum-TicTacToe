@@ -153,3 +153,52 @@ def test_job_keeps_the_published_profile_and_profiles_round_trip(store):
     published = NoiseProfile.from_record(submitted["published_profile"])
     assert published.line_qubits == result.run.metrics.line_qubits  # measured on the job's own circuit
     assert NoiseProfile.from_record(store.load("detection")[0]["profile"]) == result.profile
+
+
+def test_load_sees_records_appended_after_it_was_called(store):
+    assert store.load() == []
+    detect_winner((X, X, X, O, O, " ", " ", " ", " "), player=X, shots=64, backend=IdealBackend(seed=4903),
+                  store=store)
+    assert len(store.load("detection")) == 1
+    other = RunStore(store.root)  # another store on the same files, as a second process would be
+    detect_winner((X, X, X, O, O, " ", " ", " ", " "), player=X, shots=64, backend=IdealBackend(seed=4903),
+                  store=other)
+    assert len(store.load("detection")) == 2
+
+
+def test_loaded_records_can_be_changed_without_changing_the_store(store):
+    detect_winner((X, X, X, O, O, " ", " ", " ", " "), player=X, shots=64, backend=IdealBackend(seed=4903),
+                  store=store)
+    (record,) = store.load("detection")
+    record["board"] = "changed"
+    assert store.load("detection")[0]["board"] == "XXXOO    "
+
+
+def test_provenance_reads_git_again_after_a_while(monkeypatch):
+    from qttt import results
+
+    calls = []
+    monkeypatch.setattr(results, "_git_state", lambda: calls.append(1) or {"git_commit": "c", "git_dirty": False})
+    monkeypatch.setattr(results, "_git_cache", None)
+    clock = [100.0]
+    monkeypatch.setattr(results.time, "monotonic", lambda: clock[0])
+    provenance()
+    provenance()
+    assert len(calls) == 1  # one git call for a quick batch of records
+    clock[0] += results.GIT_STATE_SECONDS + 1
+    provenance()
+    assert len(calls) == 2
+
+
+def test_git_dirty_sees_changes_under_scripts(tmp_path):
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    (package / "code.py").write_text("x = 1\n")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run.py").write_text("y = 1\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
+    for args in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
+        subprocess.run(git + args, check=True)
+    assert _git_state(package)["git_dirty"] is False
+    (tmp_path / "scripts" / "run.py").write_text("y = 2\n")
+    assert _git_state(package)["git_dirty"] is True

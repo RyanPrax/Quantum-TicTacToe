@@ -13,7 +13,7 @@ import nbformat
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-NOTEBOOKS = sorted(p for p in (ROOT / "notebooks").glob("[0-9][0-9]_*.ipynb") if not p.name.startswith("00_"))
+NOTEBOOKS = sorted((ROOT / "notebooks").glob("[0-9][0-9]_*.ipynb"))
 
 
 def _runner():
@@ -35,6 +35,15 @@ def test_committed_with_outputs_and_no_errors(path):
     assert not [o for c in code for o in c.outputs if o.output_type == "error"]
 
 
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: p.stem)
+def test_committed_outputs_come_from_the_current_code(path):
+    # scripts/run_notebooks.py stamps the hash of src/qttt it ran with; any change to the package since then
+    # may have changed the outputs.
+    nb = nbformat.read(path, as_version=4)
+    ran_with = nb.metadata.get("qttt", {}).get("source_sha256")
+    assert ran_with == _runner().source_hash(), "outputs are stale: run scripts/run_notebooks.py"
+
+
 def test_hardware_notebook_does_not_submit_by_default():
     nb = nbformat.read(ROOT / "notebooks" / "03_hardware.ipynb", as_version=4)
     assert any("RUN_HARDWARE = False" in c.source for c in nb.cells)
@@ -47,7 +56,7 @@ def test_notebook_runs(path):
 
 
 def _present_simulated_jobs(store_path):
-    """Run 03 on a store of simulated jobs (hardware jobs can't be made in a test); returns its printed text.
+    """Run 03 on a store of simulated jobs (hardware jobs can't be made in a test); returns its text and Markdown.
 
     Every analysis cell then runs on real records before any hardware result exists.
     """
@@ -56,7 +65,8 @@ def _present_simulated_jobs(store_path):
     setup.source = setup.source.replace('STORE = RunStore("../results")', f"STORE = RunStore({str(store_path)!r})")
     setup.source = setup.source.replace("HARDWARE_ONLY = True", "HARDWARE_ONLY = False")
     _runner().run(nb, ROOT / "notebooks")
-    return "".join(o.get("text", "") for c in nb.cells if c.cell_type == "code" for o in c.outputs)
+    return "".join(o.get("text", "") + o.get("data", {}).get("text/markdown", "")
+                   for c in nb.cells if c.cell_type == "code" for o in c.outputs)
 
 
 def test_hardware_notebook_presents_saved_jobs(tmp_path):

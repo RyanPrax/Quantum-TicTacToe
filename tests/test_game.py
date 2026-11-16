@@ -207,3 +207,18 @@ def test_every_turn_links_to_the_games_calibration(tmp_path):
     detections = store.load("detection")
     assert len(detections) == 3
     assert {d["calibration_id"] for d in detections} == {calibration["id"]}
+
+
+def test_a_backend_error_leaves_the_board_as_it_was():
+    class Broken(IdealBackend):
+        def run(self, circuits, shots, on_submit=None):
+            raise ConnectionError("provider down")
+
+    game = Game(backend=Broken(seed=SEED), shots=64)
+    for cell in (0, 3, 1, 4):  # no check before turn 5
+        game.play(cell)
+    with pytest.raises(ConnectionError):
+        game.play(2)
+    assert game.board[2] == EMPTY and game.turn == 4 and len(game.checks) == 4
+    game.backend = IdealBackend(seed=SEED)
+    assert game.play(2).referee_lines == {0}

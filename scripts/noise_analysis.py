@@ -13,8 +13,8 @@ For every device and mode in the file (best with --boards-per-line 4 or more):
      current   the noise profile fitted in the job on one known board (line 0)
      constant  one share for every board (one ε fitted on many boards)
      |1> count share depending linearly on how many board qubits start in |1>
-     per bit   base × f0^bit0 × f1^bit1 × f2^bit2: each line-index bit that is 1 keeps a factor f of the
-               signal (4 numbers; a log-linear fit)
+     per bit   the shipped model (qttt.noise.fit_line_signal): signal (1 − ε) × f0^bit0 × f1^bit1 ×
+               f2^bit2 above the 1/8 floor, through the run's readout matrix (4 numbers)
      per line  one share per winning line
 3. Losing lines: the highest share any losing line reached, on no-win boards
    and on single-win boards; the false-flag cutoffs must sit above these.
@@ -22,9 +22,11 @@ For every device and mode in the file (best with --boards-per-line 4 or more):
 
 import json
 import sys
-from statistics import mean, pstdev
+from statistics import mean, stdev
 
 import numpy as np
+
+from qttt.noise import NoiseProfile
 
 
 def winner_rows(run):
@@ -34,7 +36,9 @@ def winner_rows(run):
         if len(r["winning_lines"]) == 1:
             line = r["winning_lines"][0]
             rows.append({"line": line, "ones": r["set_qubits"], "turn": r["turn"], "player": r["player"],
-                         "share": r["counts"][line] / shots, "current": r["predicted"][line]})
+                         "share": r["counts"][line] / shots, "current": r["predicted"][line],
+                         "board": tuple(r["board"]), "counts": r["counts"],
+                         "readout_counts": run["calibration_counts"][:8]})
     return rows
 
 
@@ -53,21 +57,19 @@ def by_ones(train, row):
     return slope * row["ones"] + intercept
 
 
-def _bits(line):
-    return [1.0] + [float((line >> b) & 1) for b in range(3)]
+def _fitted(rows):
+    """The detector's own profile (readout matrix, ε and bit factors) fitted on these single wins."""
+    return NoiseProfile.from_calibration(rows[0]["readout_counts"], [(r["board"], r["counts"]) for r in rows])
 
 
 def by_bit(train, row):
-    coef, *_ = np.linalg.lstsq(np.array([_bits(r["line"]) for r in train]),
-                               np.log([r["share"] for r in train]), rcond=None)
-    return float(np.exp(np.dot(_bits(row["line"]), coef)))
+    return _fitted(train).predicted_for({row["line"]})[row["line"]]
 
 
 def bit_factors(rows):
-    """(base share, factor kept per 1 in bit 0, 1, 2) fitted on every row."""
-    coef, *_ = np.linalg.lstsq(np.array([_bits(r["line"]) for r in rows]), np.log([r["share"] for r in rows]),
-                               rcond=None)
-    return np.exp(coef)
+    """(1 − ε, factor kept per 1 in bit 0, 1, 2) fitted on every row, with the detector's fit."""
+    profile = _fitted(rows)
+    return [1 - profile.epsilon, *profile.bit_factors]
 
 
 def by_line(train, row):
@@ -86,8 +88,8 @@ def analyze(run):
     print("  winner share per line (mean of its boards; each board):")
     for line in lines:
         print(f"    line {line}: {mean(per_line[line]):.3f}   " + " ".join(f"{s:.3f}" for s in per_line[line]))
-    between = pstdev([mean(v) for v in per_line.values()])
-    within = mean(pstdev(v) for v in per_line.values() if len(v) > 1)
+    between = stdev([mean(v) for v in per_line.values()])
+    within = mean(stdev(v) for v in per_line.values() if len(v) > 1)
     noise = (overall * (1 - overall) / shots) ** 0.5
     print(f"  spread: between lines {between:.3f}, between boards of one line {within:.3f},"
           f" shot noise alone {noise:.3f}")
@@ -98,7 +100,7 @@ def analyze(run):
           f" |1> count {loo_rms(rows, by_ones):.3f}, per bit {loo_rms(rows, by_bit):.3f},"
           f" per line {loo_rms(rows, by_line):.3f}")
     base, *factors = bit_factors(rows)
-    print(f"  per-bit fit: base share {base:.3f}, factor kept per 1 in bit 0, 1, 2:"
+    print(f"  per-bit fit: signal kept 1 − ε = {base:.3f}, factor kept per 1 in bit 0, 1, 2:"
           f" {', '.join(f'{f:.3f}' for f in factors)} (line qubits {run['line_qubits']})")
     losing_single = max(c / shots for r in run["rows"] if len(r["winning_lines"]) == 1
                         for i, c in enumerate(r["counts"]) if i not in r["winning_lines"])
@@ -110,7 +112,9 @@ def analyze(run):
 def main(argv=None):
     paths = (argv if argv is not None else sys.argv[1:]) or ["results/noise_bias_boards.json"]
     for path in paths:
-        for run in json.load(open(path)):
+        with open(path, encoding="utf-8") as f:
+            runs = json.load(f)
+        for run in runs:
             analyze(run)
     return 0
 

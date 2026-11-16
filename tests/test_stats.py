@@ -43,3 +43,11 @@ def test_both_below_shared_shots_are_negatively_correlated():
     n, k, p = 1024, 153, 0.1375
     independent = binomial_below(k, n, p) ** 2
     assert binomial_both_below(n, k, p, k, p) < independent
+
+
+@pytest.mark.parametrize(("k", "n", "q", "expected"), [(1, 10, 0.0, 0.0), (0, 10, 0.0, 1.0), (10, 10, 1.0, 1.0),
+                                                       (5, 10, 1.0, 1.0)])
+def test_binomial_tail_at_the_edges(k, n, q, expected):
+    from qttt.stats import binomial_tail
+
+    assert binomial_tail(k, n, q) == expected

@@ -21,7 +21,7 @@ from qttt.encoding import (
     encode_player_board,
     line_index_to_bitstring,
 )
-from qttt.grover import build_search_circuit
+from qttt.grover import build_phase_kickback_circuit, build_search_circuit
 
 SAMPLE_SIZE = 10
 SEED = 4903
@@ -31,7 +31,10 @@ _SIMULATOR = AerSimulator(method="statevector")
 
 def line_probabilities(variant, board, player=None, ancilla=False):
     """Exact probability of measuring each line index 0-7."""
-    qc = build_search_circuit(variant, board, player, ancilla)
+    return circuit_line_probabilities(build_search_circuit(variant, board, player, ancilla))
+
+
+def circuit_line_probabilities(qc):
     line_reg = qc.qregs[1]
     qc = qc.remove_final_measurements(inplace=False)
     qc.save_probabilities(line_reg)
@@ -241,3 +244,12 @@ def test_search_circuit_names_its_qubits_in_superposition(variant, ancilla, expo
     board = SINGLE_WIN_SAMPLE[0]
     qc = build_search_circuit(variant, board, _last_player(board) if variant == "player" else None, ancilla)
     assert qc.metadata["exposed_qubits"] == exposed
+
+
+@pytest.mark.parametrize("board", [NO_WIN_SAMPLE[0], SINGLE_WIN_SAMPLE[0], DOUBLE_WINS[0]], ids=["none", "one", "two"])
+def test_phase_kickback_circuit_matches_player_variant(board):
+    player = _last_player(board)
+    qc = build_phase_kickback_circuit(board, player)
+    assert qc.num_qubits == 13
+    assert qc.count_ops()["mcx"] == 8
+    assert circuit_line_probabilities(qc) == pytest.approx(line_probabilities("player", board, player), abs=1e-9)

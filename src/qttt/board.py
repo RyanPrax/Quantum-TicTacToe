@@ -39,6 +39,10 @@ LINE_NAMES: list[str] = [
     "diagonal (top-right to bottom-left)",
 ]
 
+# Shorter names for tables and figure titles.
+SHORT_LINE_NAMES: tuple[str, ...] = ("top row", "middle row", "bottom row", "left column", "middle column",
+                                     "right column", "diagonal from top-left", "diagonal from top-right")
+
 
 class Position(NamedTuple):
     """A board reachable by actual play."""

@@ -45,7 +45,7 @@ from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDynamicalDecouplin
 from qttt.backends import ANCILLA_FLAGS, DEFAULT_TRANSPILE_SEEDS, IBMBackend, get_backend
 from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.experiments import sample_boards
-from qttt.noise import DEFAULT_KNOWN, calibration_circuits, profile_from_calibration
+from qttt.noise import CALIBRATION_BOARDS, calibration_circuits, profile_from_calibration
 from qttt.results import provenance
 from qttt.stats import NUM_LINES
 
@@ -106,13 +106,13 @@ def make_backend(device, mode, seed, transpile_seeds, ancilla="auto"):
     return backend
 
 
-def measure(device, mode, cases, shots, seed, transpile_seeds, ancilla="auto"):
+def measure(device, mode, cases, shots, seed, transpile_seeds, ancilla="auto", code=None):
     backend = make_backend(device, mode, seed, transpile_seeds, ancilla)
-    extra, line_qubits = calibration_circuits(backend, "player", DEFAULT_KNOWN)
+    extra, line_qubits = calibration_circuits(backend, "player", CALIBRATION_BOARDS)
     boards = [backend.search_circuit("player", board, player) for _, board, player, _ in cases]
     start = time.time()
     out = backend.run(extra + boards, shots)
-    profile = profile_from_calibration(backend, out.counts, line_qubits, DEFAULT_KNOWN)
+    profile = profile_from_calibration(backend, out.counts, line_qubits, CALIBRATION_BOARDS)
     metrics = backend.metrics(backend.search_template("player"))
     rows = []
     for (name, board, player, lines), counts in zip(cases, out.counts[len(extra):], strict=True):
@@ -126,7 +126,7 @@ def measure(device, mode, cases, shots, seed, transpile_seeds, ancilla="auto"):
             "ancilla_setting": ancilla,
             "readout": [list(r) for r in profile.readout],
             "calibration_counts": [list(c) for c in out.counts[:len(extra)]],
-            "seconds": round(time.time() - start), "provenance": provenance(), "rows": rows}
+            "seconds": round(time.time() - start), "provenance": code or provenance(), "rows": rows}
 
 
 def report(result):
@@ -160,14 +160,14 @@ def main(argv=None):
     parser.add_argument("--out", default="results/noise_bias.json", help="where to save every count (JSON)")
     args = parser.parse_args(argv)
 
-    provenance()  # cached now, so every result records the code as it was at start, not after later edits
+    code = provenance()  # every result records the code as it was at start, not after later edits
     cases = choose_boards(args.seed, args.boards_per_line)
     results = []
     for device in args.devices:
         for mode in args.modes:
             for ancilla in args.ancilla:
                 results.append(measure(device, mode, cases, args.shots, args.seed, args.transpile_seeds,
-                                       ANCILLA_FLAGS[ancilla]))
+                                       ANCILLA_FLAGS[ancilla], code))
                 report(results[-1])
                 out = Path(args.out)
                 out.parent.mkdir(parents=True, exist_ok=True)

@@ -14,6 +14,8 @@ code or in a committed file.
 """
 
 import copy
+import dataclasses
+import hashlib
 import math
 import os
 import warnings
@@ -209,6 +211,20 @@ class Backend(ABC):
         """The counts of a job submitted earlier, by its id (waits if it is still running)."""
         raise NotImplementedError(f"{self.name} keeps no jobs to fetch")
 
+    def board_metrics(self, tqc: QuantumCircuit, template: CircuitMetrics) -> CircuitMetrics:
+        """metrics() of a board's circuit (search_circuit), given the metrics of the template it was built from.
+
+        A board only adds single-qubit gates on board qubits in front of the
+        template, so the two-qubit count, line qubits and idle survival (which
+        counts only the exposed qubits after their first gate) are the
+        template's; the gate ESP and depth are worked out again, which is cheap.
+        This skips a scheduling pass of the whole circuit per board. A circuit
+        without exposed-qubit metadata gets the full metrics().
+        """
+        if "exposed_qubits" not in (tqc.metadata or {}) or "board_prep" not in (tqc.metadata or {}):
+            return self.metrics(tqc)
+        return dataclasses.replace(template, depth=tqc.depth(), log10_esp=self.gate_log10_esp(tqc))
+
     def metrics(self, tqc: QuantumCircuit) -> CircuitMetrics:
         return CircuitMetrics(
             two_qubit_gates=two_qubit_count(tqc),
@@ -329,6 +345,19 @@ class IBMBackend(Backend):
         job = RuntimeSampler(mode=self.backend, options=self.sampler_options or None).run(list(circuits), shots=shots)
         on_submit(job.job_id())
         return [_line_counts(r) for r in job.result()], job.job_id()
+
+    def dry_run(self, circuits: Sequence[QuantumCircuit], shots: int):
+        """Have IBM validate a job and estimate its usage without running it on the device; returns the job.
+
+        Its results are random mock data, so they are never counted or saved.
+        Real devices only.
+        """
+        if self.simulated:
+            raise ValueError("a dry run is for real devices; a simulated backend runs nothing remotely")
+        from qiskit_ibm_runtime.executor_sampler import Sampler as RuntimeSampler
+
+        sampler = RuntimeSampler(mode=self.backend, options=self.sampler_options or None)
+        return sampler.run(list(circuits), shots=shots, dry_run=True)
 
     def fetch(self, job_id):
         if self.simulated:
@@ -487,6 +516,42 @@ def with_board_prep(template: QuantumCircuit, gates: Sequence) -> QuantumCircuit
         tqc.data.insert(0, CircuitInstruction(type(standard[name])(*params), tuple(tqc.qubits[q] for q in qubits)))
     tqc.metadata = {**(template.metadata or {}), "board_prep": [list(g) for g in gates]}
     return tqc
+
+
+def template_fingerprint(tqc: QuantumCircuit) -> dict:
+    """What a calibration's noise depends on beyond the line qubits: the compiled gates and where they run.
+
+    ancilla, the two-qubit gate count, the initial layout and a hash of every
+    gate with its physical qubits (and parameters, rounded) say which circuit it
+    is; two templates that agree on them run the same gates on the same
+    physical qubits, so a profile measured on one holds for the other. The
+    transpile seed is kept to say how it was found, but not compared: two
+    seeds can find the same circuit.
+    """
+    layout = tqc.layout.initial_index_layout(filter_ancillas=True) if tqc.layout is not None else None
+    gates = hashlib.sha256()
+    for inst in tqc.data:
+        qubits = ",".join(str(tqc.find_bit(q).index) for q in inst.qubits)
+        params = ",".join(f"{float(p):.6g}" if isinstance(p, (int, float)) else str(p) for p in inst.operation.params)
+        gates.update(f"{inst.operation.name}({params})[{qubits}];".encode())
+    return {
+        "ancilla": bool((tqc.metadata or {}).get("ancilla", False)),
+        "two_qubit_gates": two_qubit_count(tqc),
+        "layout": None if layout is None else [int(q) for q in layout],
+        "gates_sha256": gates.hexdigest(),
+        "transpile_seed": (tqc.metadata or {}).get("transpile_seed"),
+    }
+
+
+_UNCOMPARED = ("transpile_seed",)
+
+
+def template_mismatch(saved: dict | None, current: dict) -> list[str]:
+    """How a saved template_fingerprint differs from the current one; [] if it matches or nothing was saved."""
+    if not saved:
+        return []
+    return [f"{key} {saved[key]} != {current[key]}" for key in current
+            if key not in _UNCOMPARED and key in saved and saved[key] != current[key]]
 
 
 def two_qubit_count(tqc: QuantumCircuit) -> int:

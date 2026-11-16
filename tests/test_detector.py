@@ -312,9 +312,9 @@ def test_detect_winner_checks_input_before_running(kwargs, monkeypatch):
     def fail(*args, **kw):
         raise AssertionError("circuit ran before input was checked")
 
-    monkeypatch.setattr("qttt.detector.run_searches", fail)
+    monkeypatch.setattr("qttt.backends.Backend.run", fail)
     with pytest.raises(ValueError):
-        detect_winner(TOP_ROW, **kwargs)
+        detect_winner(TOP_ROW, player=X, **kwargs)
 
 
 # --- detect_winner, default 12-qubit player variant ---
@@ -395,7 +395,9 @@ def test_calibration_is_stored_and_linked(tmp_path):
     detections = store.load("detection")
     assert len(detections) == 2
     assert {d["calibration_id"] for d in detections} == {calibration["id"]}
-    assert detections[0]["profile"]["source"] == "calibration:ideal"
+    assert calibration["profile"]["source"] == "calibration:ideal"
+    # The profile is saved once, in the calibration record; the detections name it.
+    assert [d["profile"] for d in detections] == [{"calibration_id": calibration["id"]}] * 2
 
 
 @pytest.mark.slow
@@ -486,3 +488,68 @@ def test_a_reused_profile_links_to_its_calibration(tmp_path):
     detect_winner(DOUBLE_WIN, player=X, shots=256, backend=IdealBackend(seed=SEED), profile=first.profile, store=store)
     assert [d["calibration_id"] for d in store.load("detection")] == [calibration["id"]] * 2
     assert store.load("calibration") == [calibration]  # reusing the profile runs no new calibration
+
+
+def test_a_flagged_line_of_the_other_player_is_rejected():
+    # O has the top row; X just moved. The player-variant search marks X's lines only, so a flag on O's line is
+    # noise: it is checked, and rejected, rather than reported as a win for X.
+    board = (O, O, O, X, X, " ", X, " ", " ")
+    verdict = flag_and_check(board, (1024, 0, 0, 0, 0, 0, 0, 0), 153, player=X)
+    assert verdict.rejected == (0,) and verdict.lines == frozenset() and verdict.winner is None
+    assert flag_and_check(board, (1024, 0, 0, 0, 0, 0, 0, 0), 153).winner == O  # the full variant: either player
+
+
+def test_a_crash_partway_through_saving_detections_can_be_resumed(tmp_path, monkeypatch):
+    store = RunStore(tmp_path)
+    cases = [(TOP_ROW, X), (DOUBLE_WIN, X), (TOP_ROW, X)]
+    saved = []
+    original = RunStore.save_detection
+
+    def crash_on_the_second(self, *args, **kwargs):
+        if len(saved) == 1:
+            raise OSError("disk full")
+        saved.append(original(self, *args, **kwargs))
+        return saved[-1]
+    monkeypatch.setattr(RunStore, "save_detection", crash_on_the_second)
+    with pytest.raises(OSError) as info:
+        detect_winners(cases, shots=256, backend=IdealBackend(seed=SEED), profile="calibrate", store=store)
+    assert "resume_job" in "".join(info.value.__notes__)
+    monkeypatch.undo()
+    assert len(store.load("detection")) == 1
+
+    submitted = store.load("job")[0]
+    results = resume_job(submitted["id"], IdealBackend(seed=SEED), store)
+    assert len(results) == 3
+    detections = store.load("detection")
+    assert [d["board"] for d in detections] == ["".join(board) for board, _ in cases]  # each saved once, in order
+    assert len(store.load("calibration")) == 1
+    with pytest.raises(ValueError, match="already finished"):
+        resume_job(submitted["id"], IdealBackend(seed=SEED), store)
+
+
+def test_resume_refuses_a_fetched_job_of_the_wrong_shape(tmp_path):
+    store = RunStore(tmp_path)
+    backend = _StoppedBackend(seed=SEED)
+    with pytest.raises(KeyboardInterrupt):
+        detect_winners([(TOP_ROW, X)], shots=256, backend=backend, store=store)
+    backend.output = dataclasses.replace(backend.output, counts=backend.output.counts[:-1])
+    with pytest.raises(ValueError, match="nothing was saved"):
+        resume_job("job-1", backend, store)
+    assert [r["status"] for r in store.load("job")] == ["submitted"]
+
+
+def test_an_interrupt_while_waiting_says_how_to_resume(tmp_path):
+    store = RunStore(tmp_path)
+    with pytest.raises(KeyboardInterrupt) as info:
+        detect_winners([(TOP_ROW, X)], shots=64, backend=_StoppedBackend(seed=SEED), store=store)
+    assert "resume_job" in "".join(info.value.__notes__)
+
+
+def test_a_profile_from_another_compiled_circuit_is_refused(monkeypatch):
+    backend = IdealBackend(seed=SEED)
+    (first,) = detect_winners([(TOP_ROW, X)], shots=256, backend=backend, profile="calibrate")
+    assert first.profile.template is not None
+    other = dataclasses.replace(first.profile, template={**first.profile.template, "two_qubit_gates": -1})
+    monkeypatch.setattr("qttt.backends.Backend.run", lambda *a, **k: pytest.fail("ran"))
+    with pytest.raises(ValueError, match="another compiled circuit"):
+        detect_winner(TOP_ROW, player=X, shots=256, backend=backend, profile=other)

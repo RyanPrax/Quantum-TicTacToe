@@ -7,7 +7,15 @@ from typing import NamedTuple
 
 from qiskit import QuantumCircuit
 
-from qttt.backends import Backend, CircuitMetrics, IdealBackend, JobOutput, line_qubits
+from qttt.backends import (
+    Backend,
+    CircuitMetrics,
+    IdealBackend,
+    JobOutput,
+    line_qubits,
+    template_fingerprint,
+    template_mismatch,
+)
 from qttt.board import EMPTY, WIN_LINES
 from qttt.noise import NoiseProfile, calibration_circuits, known_boards, profile_from_calibration
 from qttt.results import RunStore
@@ -71,7 +79,7 @@ def run_searches(cases: Sequence[tuple[Sequence[str], str | None]], variant="pla
         backend = IdealBackend()
     circuits, transpiled = _search_circuits(cases, variant, backend)
     out = backend.run(transpiled, shots)
-    return _search_runs(out.counts, out.job_id, shots, circuits, transpiled, backend)
+    return _search_runs(out.counts, out.job_id, shots, circuits, transpiled, backend, variant)
 
 
 def _search_circuits(cases, variant, backend):
@@ -80,8 +88,9 @@ def _search_circuits(cases, variant, backend):
     return circuits, transpiled
 
 
-def _search_runs(counts, job_id, shots, circuits, transpiled, backend):
-    return [SearchRun(shots, c, qc, backend.name, job_id, tqc, backend.metrics(tqc))
+def _search_runs(counts, job_id, shots, circuits, transpiled, backend, variant):
+    template = backend.metrics(backend.search_template(variant)) if transpiled else None  # one scheduling pass per job
+    return [SearchRun(shots, c, qc, backend.name, job_id, tqc, backend.board_metrics(tqc, template))
             for c, qc, tqc in zip(counts, circuits, transpiled, strict=True)]
 
 
@@ -90,11 +99,14 @@ def run_search(board, variant="player", player=None, shots=DEFAULT_SHOTS, backen
     return run_searches([(board, player)], variant, shots, backend)[0]
 
 
-def flag_and_check(board, counts, cutoffs) -> Verdict:
+def flag_and_check(board, counts, cutoffs, player: str | None = None) -> Verdict:
     """Flag lines with count >= their cutoff and confirm each one on the board.
 
     cutoffs is one count for every line or 8 per-line counts. Only the cells of
-    flagged lines are read.
+    flagged lines are read. With player (the player variant), a line is
+    confirmed only if it is that player's: the search marks only their lines,
+    so a flagged line of the opponent is noise and is rejected. Without it
+    (the legacy full variant), either player's line counts.
     """
     if isinstance(cutoffs, int):
         cutoffs = (cutoffs,) * NUM_LINES
@@ -103,7 +115,8 @@ def flag_and_check(board, counts, cutoffs) -> Verdict:
     rejected = []
     for i in candidates:
         a, b, c = WIN_LINES[i]
-        if board[a] != EMPTY and board[a] == board[b] == board[c]:
+        owner = board[a] if player is None else player
+        if board[a] != EMPTY and board[a] == board[b] == board[c] == owner:
             confirmed.append(i)
         else:
             rejected.append(i)
@@ -125,12 +138,15 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
 
     profile sets the per-line cutoffs:
       "auto" (default): "ideal" on the ideal simulator, "calibrate" on any other backend.
-      "calibrate": add the 8 readout circuits and a known-winner board to the same
-        job, fit a profile from them, and set the cutoffs from it once the job is back.
+      "calibrate": add the calibration circuits (8 readout circuits and the known
+        boards, noise.CALIBRATION_BOARDS) to the same job, run at the same shots
+        as the boards, fit a profile from them, and set the cutoffs from it once
+        the job is back.
       "published": the backend's published calibration data (no extra circuits).
       "ideal": no noise, the same cutoff on every line.
-      or a NoiseProfile measured earlier on the same physical qubits.
-    A profile that does not fit the circuits is refused before anything runs.
+      or a NoiseProfile measured earlier on the same compiled circuit.
+    A profile that does not fit the circuits (other line qubits, or another
+    template: see backends.template_fingerprint) is refused before anything runs.
     Results are saved to store, labeled with tag; runs on real hardware are
     always saved, to results/ unless another store is given. The store records
     the job when it is submitted and its counts when they are back, so a job
@@ -152,7 +168,7 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
     extra, line_qubits = calibration_circuits(backend, variant, known) if calibrating else ([], None)
     if not calibrating:
         profile = _fixed_profile(profile, backend, variant)
-        _check_line_qubits(profile, transpiled)
+        _check_profile_fits(profile, transpiled, backend, variant)
 
     # The device's published calibration data at submit time, kept with the job to compare against later.
     published = NoiseProfile.from_backend(backend, variant) if store is not None else None
@@ -165,17 +181,19 @@ def detect_winners(cases: Sequence[tuple[Sequence[str], str | None]], variant="p
                 budget=budget, known=known, profile=None if calibrating else profile, published=published,
                 tag=tag))
 
-    out = backend.run(extra + transpiled, shots, on_submit)
-    job_record = submitted[0] if submitted else None
+    out = None
     try:
+        out = backend.run(extra + transpiled, shots, on_submit)
         if store is not None:
-            store.save_job_output(job_record, out)
+            store.save_job_output(submitted[0] if submitted else None, out)
         return _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, len(extra),
-                       None if calibrating else profile, known, line_qubits, store, tag, job_record)
-    except Exception as e:
-        if job_record is not None:
-            e.add_note(f"Job {out.job_id or job_record} ran and is recorded in {store.runs_file}; "
-                       f"finish it with resume_job({job_record!r}, backend, store).")
+                       None if calibrating else profile, known, line_qubits, store, tag,
+                       submitted[0] if submitted else None)
+    except BaseException as e:  # Ctrl-C while waiting for the job too
+        if submitted:
+            state = "ran" if out is not None else "was submitted"
+            e.add_note(f"Job {(out and out.job_id) or submitted[0]} {state} and is recorded in {store.runs_file}; "
+                       f"finish it with resume_job({submitted[0]!r}, backend, store).")
         raise
 
 
@@ -185,15 +203,24 @@ def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike =
     job is the provider's job id or the id of the job's submitted record. The
     counts are taken from the store if they were saved, or else fetched from the
     provider by job id. The circuits are rebuilt from the template saved with the
-    job, so the cutoffs and records come out as if the run had not stopped.
+    job, so the cutoffs and records come out as if the run had not stopped. A job
+    that stopped partway through saving its detections saves only the rest
+    (detections are saved in the job's board order); the results returned cover
+    every board.
     """
     if not isinstance(store, RunStore):
         store = RunStore(store)
     submitted, done = store.job(job)
     if submitted["backend"]["name"] != backend.name:
         raise ValueError(f"job ran on {submitted['backend']['name']}, not {backend.name}")
-    if any(r.get("job_record") == submitted["id"] for r in store.load("detection")):
+    saved = [r for r in store.load("detection") if r.get("job_record") == submitted["id"]]
+    calibrated = not submitted["calibrate"] or any(r.get("job_record") == submitted["id"]
+                                                   for r in store.load("calibration"))
+    if done is not None and calibrated and len(saved) >= len(submitted["cases"]):
         raise ValueError(f"job {job} is already finished; its detections are in {store.runs_file}")
+    for r, case in zip(saved, submitted["cases"], strict=False):
+        if (r["board"], r["player"]) != (case["board"], case["player"]):
+            raise ValueError(f"job {job}'s saved detections are not its first boards in order; not resuming")
 
     variant = submitted["variant"]
     cases = [(tuple(c["board"]), c["player"]) for c in submitted["cases"]]
@@ -205,11 +232,17 @@ def resume_job(job: str, backend: Backend, store: RunStore | str | os.PathLike =
         out = JobOutput(tuple(tuple(c) for c in done["counts"]), done["job_id"])
     else:
         out = backend.fetch(submitted["job_id"])
+        expected = len(extra) + len(cases)
+        wrong = [i for i, c in enumerate(out.counts) if sum(c) != submitted["shots"]]
+        if len(out.counts) != expected or wrong:
+            raise ValueError(f"job {submitted['job_id']} came back with {len(out.counts)} results (expected {expected})"
+                             + (f", and results {wrong[:5]} do not have {submitted['shots']} shots" if wrong else "")
+                             + "; nothing was saved")
         store.save_job_output(submitted["id"], out)
     profile = None if submitted["profile"] is None else NoiseProfile.from_record(submitted["profile"])
     return _finish(cases, variant, submitted["shots"], submitted["budget"], backend, out, circuits, transpiled,
-                   len(extra), profile, known, line_qubits, store, submitted["tag"], submitted["id"])
-
+                   len(extra), profile, known, line_qubits, store, submitted["tag"], submitted["id"],
+                   already_saved=len(saved))
 
 
 def _open_store(store, backend):
@@ -229,20 +262,28 @@ def _fixed_profile(profile, backend, variant) -> NoiseProfile:
     return profile
 
 
-def _check_line_qubits(profile, transpiled):
+def _check_profile_fits(profile, transpiled, backend, variant):
+    """Refuse a profile measured on other line qubits or on another compiled circuit than this run's."""
     for tqc in transpiled:
         qubits = line_qubits(tqc)
         if profile.line_qubits is not None and qubits != profile.line_qubits:
             raise ValueError(f"profile was measured on line qubits {profile.line_qubits}, "
                              f"but this run reads out on {qubits}")
+    if transpiled:
+        problems = template_mismatch(profile.template, template_fingerprint(backend.search_template(variant)))
+        if problems:
+            raise ValueError(f"profile was measured on another compiled circuit: {'; '.join(problems)}")
 
 
 def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, num_extra, profile, known,
-            line_qubits, store, tag, job_record) -> list[DetectionResult]:
-    """Cutoffs, verdicts and saved records from a job's counts; profile None means fit it from the job."""
-    runs = _search_runs(out.counts[num_extra:], out.job_id, shots, circuits, transpiled, backend)
+            line_qubits, store, tag, job_record, already_saved=0) -> list[DetectionResult]:
+    """Cutoffs, verdicts and saved records from a job's counts; profile None means fit it from the job.
+
+    The first already_saved results are not saved again (a resumed job that had saved them).
+    """
+    runs = _search_runs(out.counts[num_extra:], out.job_id, shots, circuits, transpiled, backend, variant)
     if profile is None:
-        profile = profile_from_calibration(backend, out.counts, line_qubits, known)
+        profile = profile_from_calibration(backend, out.counts, line_qubits, known, variant)
         if store is not None:
             # A job resumed after a crash may already have saved its calibration.
             saved = [r["id"] for r in store.load("calibration") if job_record and r.get("job_record") == job_record]
@@ -253,7 +294,7 @@ def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, n
 
     results = []
     for (board, player), run in zip(cases, runs, strict=True):
-        verdict = flag_and_check(board, run.counts, cutoffs)
+        verdict = flag_and_check(board, run.counts, cutoffs, player)
         results.append(DetectionResult(
             board=tuple(board),
             variant=variant,
@@ -269,7 +310,7 @@ def _finish(cases, variant, shots, budget, backend, out, circuits, transpiled, n
         ))
 
     if store is not None:
-        for result in results:
+        for result in results[already_saved:]:
             store.save_detection(result, backend, profile.calibration_id, tag, job_record)
     return results
 

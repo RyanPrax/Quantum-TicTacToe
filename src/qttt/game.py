@@ -96,7 +96,11 @@ class Game:
         return [] if self.is_over else [c for c in range(9) if self.board[c] == EMPTY]
 
     def play(self, cell: int) -> TurnCheck:
-        """Place the current player's mark, check for a winner, and return the check."""
+        """Place the current player's mark, check for a winner, and return the check.
+
+        The mark is placed only once the check is done, so a backend error
+        leaves the game as it was, ready to play the same move again.
+        """
         if self.is_over:
             raise ValueError("The game is over.")
         if not isinstance(cell, int) or not 0 <= cell <= 8:
@@ -105,14 +109,16 @@ class Game:
             raise ValueError(f"Cell {cell} is taken.")
 
         player = self.current_player
-        self.board[cell] = player
+        board = list(self.board)
+        board[cell] = player
         result = None
-        if self.turn >= FIRST_CHECK_TURN:
-            result = detect_winner(self.board, variant=self.variant, player=player, shots=self.shots,
+        if 9 - board.count(EMPTY) >= FIRST_CHECK_TURN:
+            result = detect_winner(board, variant=self.variant, player=player, shots=self.shots,
                                    budget=self.budget, backend=self.backend, profile=self.profile,
                                    store=self.store)
             if isinstance(self.profile, str) and result.profile.source.startswith("calibration:"):
                 self.profile = result.profile  # calibrated once; reuse it for the rest of the game
+        self.board = board
         referee = frozenset(classical_winning_lines(self.board, player))
         check = TurnCheck(self.turn, player, cell, tuple(self.board), result, referee)
         self.checks.append(check)

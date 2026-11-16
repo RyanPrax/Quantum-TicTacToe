@@ -184,7 +184,7 @@ def _ask_move(game: Game, player: str, read, write) -> int | None:
             return None
         if text in ("q", "quit", "exit"):
             return None
-        if text.isdigit() and int(text) in game.legal_moves():
+        if text.isascii() and text.isdecimal() and int(text) in game.legal_moves():
             return int(text)
         write(f"Pick an empty cell: {', '.join(map(str, game.legal_moves()))}.")
 

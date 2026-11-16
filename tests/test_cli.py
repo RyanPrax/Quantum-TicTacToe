@@ -165,3 +165,9 @@ def test_default_transpile_seeds(monkeypatch):
 def test_bad_transpile_seeds_are_refused():
     code, out = _run(["--transpile-seeds", "0"], [])
     assert code == 2 and "--transpile-seeds" in out
+
+
+def test_digits_that_are_not_cell_numbers_are_asked_again():
+    code, out = _run(["--seed", "4903", "--shots", "256"], ["²", "٣", "0", "3", "1", "4", "2"])
+    assert code == 0
+    assert out.count("Pick an empty cell") == 2

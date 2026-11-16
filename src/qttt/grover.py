@@ -5,7 +5,8 @@ from collections.abc import Sequence
 from qiskit import QuantumCircuit
 from qiskit.circuit import ClassicalRegister, QuantumRegister
 
-from qttt.encoding import encode_full_board, encode_player_board
+from qttt.board import WIN_LINES
+from qttt.encoding import encode_full_board, encode_player_board, line_index_to_bitstring
 from qttt.oracles import full_oracle, mcz, player_oracle
 
 # "player" (12 qubits) is the main version; "full" (22 qubits) is the legacy class version.
@@ -96,4 +97,34 @@ def build_search_circuit(
     # Logical qubits held in superposition the whole time; the board qubits only hold 0 or 1 as controls.
     exposed = list(line_reg) + (list(phase_reg) if variant == "full" else ancilla_reg[0][:] if ancilla else [])
     qc.metadata = {"ancilla": ancilla, "exposed_qubits": [qc.find_bit(q).index for q in exposed]}
+    return qc
+
+
+def build_phase_kickback_circuit(board: Sequence[str], player: str) -> QuantumCircuit:
+    """The 13-qubit step between the class version and the player variant, kept for comparison.
+
+    One qubit per cell as in the player variant, but each line's sign flip is
+    made by phase kickback as in the class version: an MCX with 6 controls (the
+    3 line-index qubits and the line's 3 cell qubits) onto a "phase" qubit in
+    |->. It gives the same probabilities as build_search_circuit("player", ...).
+    """
+    board_reg = QuantumRegister(9, name="board")
+    line_reg = QuantumRegister(3, name="line")
+    phase_reg = QuantumRegister(1, name="phase")
+    qc = QuantumCircuit(board_reg, line_reg, phase_reg, ClassicalRegister(3, name="line_cl"), name="grover_kickback")
+    encode_player_board(qc, board_reg, board, player)
+    qc.x(phase_reg[0])
+    qc.h(phase_reg[0])
+    qc.h(line_reg)
+    for index, cells in enumerate(WIN_LINES):
+        # Flip line-index qubits whose bit is 0, so the gate matches only this index.
+        flips = [line_reg[q] for q, bit in enumerate(reversed(line_index_to_bitstring(index))) if bit == "0"]
+        if flips:
+            qc.x(flips)
+        qc.mcx(list(line_reg) + [board_reg[c] for c in cells], phase_reg[0])
+        if flips:
+            qc.x(flips)
+    diffuser(qc, line_reg)
+    qc.measure(line_reg, qc.cregs[0])
+    qc.metadata = {"ancilla": False, "exposed_qubits": [qc.find_bit(q).index for q in [*line_reg, phase_reg[0]]]}
     return qc

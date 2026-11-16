@@ -24,6 +24,7 @@ misses at 1024 and 8192 shots.
 
 import json
 import sys
+from dataclasses import replace
 
 import numpy as np
 
@@ -69,6 +70,7 @@ def check(run):
           f" {len(held_no_wins)} no-win boards, none used to calibrate")
     print(f"  {'calibration':18} {'budget':>6} {'share error':>11} | {'missed':>7} {'flags':>6} (1024 shots) |"
           f" {'asks for':>8} {'missed':>7} {'flags':>6}")
+    profile = None
     for name, lines, per_bit, budget in CONFIGS:
         profile = calibrate(run, [first[line] for line in lines], no_wins[:2], per_bit)
         error = np.sqrt(np.mean([(profile.predicted_for({w})[w] - r["counts"][w] / data_shots) ** 2
@@ -79,6 +81,7 @@ def check(run):
         asks = str(needed) if needed else f">{MAX_SHOTS}"
         print(f"  {name:18} {budget:>6} {error:>11.3f} | {missed:>7.1%} {flags:>6.3f} {'':12} |"
               f" {asks:>8} {missed_n:>7.1%} {flags_n:>6.3f}")
+    name, _, _, budget = CONFIGS[-1]  # the per-line table is for the last configuration, the one shipped
     print(f"  per line, {name}, budget {budget}: winner share (held-out mean), cutoff share, misses")
     print(f"    {'line':>4} {'winner':>7} {'cutoff@1024':>11} {'missed@1024':>11} {'cutoff@8192':>11}"
           f" {'missed@8192':>11}")
@@ -101,18 +104,23 @@ def margins(run):
     held_singles = [r for r in singles if r not in first.values()]
     profile = calibrate(run, list(first.values()), no_wins[:2], per_bit=True)
     default = noise.NO_WIN_MARGIN
-    print(f"  no-win margin (standard errors of the pooled no-win shots): misses / false flags at {SHOTS} shots")
-    for margin in (0.0, 0.5, 1.0, 1.5, 2.0):
-        noise.NO_WIN_MARGIN = margin
-        missed, flags = score(profile, SHOTS, 0.2, held_singles, no_wins[2:], run["shots"])
-        print(f"    {margin:>3}: {missed:>6.1%} / {flags:.3f}")
-    noise.NO_WIN_MARGIN = default
+    print(f"  no-win margin (standard errors of the pooled losing shares): misses / false flags at {SHOTS} shots")
+    try:
+        for margin in (0.0, 0.5, 1.0, 1.5, 2.0):
+            noise.NO_WIN_MARGIN = margin
+            # A fresh copy: q0 is cached per profile, and it depends on the margin.
+            missed, flags = score(replace(profile), SHOTS, 0.2, held_singles, no_wins[2:], run["shots"])
+            print(f"    {margin:>3}: {missed:>6.1%} / {flags:.3f}")
+    finally:
+        noise.NO_WIN_MARGIN = default
 
 
 def main(argv=None):
     paths = (argv if argv is not None else sys.argv[1:]) or ["results/noise_bias_boards.json"]
     for path in paths:
-        for run in json.load(open(path)):
+        with open(path, encoding="utf-8") as f:
+            runs = json.load(f)
+        for run in runs:
             check(run)
             margins(run)
     return 0

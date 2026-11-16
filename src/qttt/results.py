@@ -12,12 +12,25 @@ to keep them; load them back with RunStore.load() (or pandas.read_json(path,
 lines=True)).
 
 Records never contain tokens or account details.
+
+Schema versions (each record's "schema"):
+  1  the first records. A profile's no_win_shares were at first each line's
+     highest share on a no-win calibration board, later the pooled mean over
+     them; the records do not say which.
+  2  no_win_shares are each line's pooled share as a loser over every
+     calibration board (see qttt.noise.losing_shares), with their standard
+     errors and spread. A detection whose cutoffs came from a saved
+     calibration record keeps only {"calibration_id": ...} as its profile; the
+     calibration record holds the profile itself.
+Readers refit a version-1 profile from its calibration counts where they have
+them (qttt.analysis.Job.measured_profile).
 """
 
 import json
 import os
 import platform
 import subprocess
+import time
 import uuid
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -29,7 +42,7 @@ from qiskit import qpy
 from qttt.backends import with_board_prep
 from qttt.board import O, X, classical_winning_lines
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LABELS = ("no_win", "single_win", "double_win")  # by number of true winning lines
 
 
@@ -52,6 +65,8 @@ class RunStore:
         self.root = Path(root)
         self.runs_file = self.root / "runs.jsonl"
         self.circuits_dir = self.root / "circuits"
+        self._records: tuple[tuple[int, int], list[dict]] | None = None  # (file size, mtime) and its parsed records
+        self._circuits: dict[str, object] = {}  # circuit file -> loaded circuit
 
     def save_job_submitted(self, job_id, backend, template, *, cases, variant, shots, budget, known, profile,
                            published=None, tag: str | None = None) -> str:
@@ -73,8 +88,8 @@ class RunStore:
             "cases": [{"board": "".join(board), "player": player} for board, player in cases],
             "known": [{"board": "".join(board), "player": player} for board, player in known],
             "calibrate": profile is None,
-            "profile": _profile_summary(profile),
-            "published_profile": _profile_summary(published),
+            "profile": profile_summary(profile),
+            "published_profile": profile_summary(published),
             "backend": _backend_fields(backend),
         }
         return self._append(record, template)
@@ -108,7 +123,9 @@ class RunStore:
         from; job_record to the job's submitted record; tag names the experiment
         or batch it belongs to. The record also
         holds the board's true label (true_lines, worked out classically), so a
-        result can be scored without recomputing anything.
+        result can be scored without recomputing anything. A detection in a job
+        whose profile is saved in a calibration record (calibration_id) keeps
+        only that id as its profile, not another copy of it.
         """
         run = result.run
         true_lines = sorted(true_winning_lines(result.board, result.player))
@@ -131,7 +148,8 @@ class RunStore:
             "lines": sorted(result.lines),
             "candidates": list(result.candidates),
             "rejected": list(result.rejected),
-            "profile": _profile_summary(result.profile),
+            "profile": ({"calibration_id": calibration_id} if calibration_id is not None and job_record is not None
+                        else profile_summary(result.profile)),
             **_run_fields(run, backend),
         }
         prep = None if run.transpiled is None else (run.transpiled.metadata or {}).get("board_prep")
@@ -149,7 +167,9 @@ class RunStore:
         output is the job's output; its first counts are the 8 readout circuits,
         then one per known board (anything after that is ignored). A calibration
         pooled from saved ones (experiments.saved_profile) names their record ids
-        in pooled_from and has no job of its own.
+        in pooled_from and has no job of its own. The profile's template
+        fingerprint (backends.template_fingerprint) says which compiled circuit
+        it was measured on.
         """
         num_lines = len(profile.readout)
         record = {
@@ -161,7 +181,7 @@ class RunStore:
             "readout_counts": [list(c) for c in output.counts[:num_lines]],
             "known": [{"board": "".join(board), "player": player, "counts": list(counts)}
                       for (board, player), counts in zip(known, output.counts[num_lines:], strict=False)],
-            "profile": _profile_summary(profile),
+            "profile": profile_summary(profile),
             "job_id": output.job_id,
             "pooled_from": pooled_from,
             "backend": _backend_fields(backend),
@@ -169,12 +189,21 @@ class RunStore:
         return self._append(record, None)
 
     def load(self, kind: str | None = None, tag: str | None = None) -> list[dict]:
-        """Every saved record, oldest first; optionally only one kind ("detection", "calibration" or "job") or tag."""
+        """Every saved record, oldest first; optionally only one kind ("detection", "calibration" or "job") or tag.
+
+        The file is parsed again only when it has changed since the last call.
+        Each record is a fresh dict, but nested lists and dicts are shared
+        between calls: copy them before changing them.
+        """
         if not self.runs_file.exists():
             return []
-        with self.runs_file.open(encoding="utf-8") as f:
-            records = [json.loads(line) for line in f if line.strip()]
-        return [r for r in records if (kind is None or r["kind"] == kind) and (tag is None or r.get("tag") == tag)]
+        stat = self.runs_file.stat()
+        key = (stat.st_size, stat.st_mtime_ns)
+        if self._records is None or self._records[0] != key:
+            with self.runs_file.open(encoding="utf-8") as f:
+                self._records = (key, [json.loads(line) for line in f if line.strip()])
+        return [dict(r) for r in self._records[1]
+                if (kind is None or r["kind"] == kind) and (tag is None or r.get("tag") == tag)]
 
     def load_circuit(self, record: dict):
         """The transpiled circuit saved with a record, or None.
@@ -186,8 +215,10 @@ class RunStore:
             return with_board_prep(self.load_circuit(job), record["board_prep"])
         if not record.get("circuit_file"):
             return None
-        with (self.root / record["circuit_file"]).open("rb") as f:
-            return qpy.load(f)[0]
+        if record["circuit_file"] not in self._circuits:  # saved circuits never change
+            with (self.root / record["circuit_file"]).open("rb") as f:
+                self._circuits[record["circuit_file"]] = qpy.load(f)[0]
+        return self._circuits[record["circuit_file"]].copy()
 
     def _append(self, record: dict, circuit) -> str:
         record_id = uuid.uuid4().hex
@@ -213,16 +244,32 @@ class RunStore:
         return record_id
 
 
-@lru_cache(maxsize=1)
+GIT_STATE_SECONDS = 10.0  # how long provenance() reuses the git state, so a batch of appends asks git once
+_git_cache: tuple[float, dict] | None = None
+
+
 def provenance() -> dict:
-    """Code and library versions, so every record says exactly what produced it."""
+    """Code and library versions, so every record says exactly what produced it.
+
+    The git state is read again after GIT_STATE_SECONDS, so a long notebook
+    session records edits made while it runs.
+    """
+    global _git_cache
+    now = time.monotonic()
+    if _git_cache is None or now - _git_cache[0] > GIT_STATE_SECONDS:
+        _git_cache = (now, _git_state())
+    return {"python": platform.python_version(), "packages": _package_versions(), **_git_cache[1]}
+
+
+@lru_cache(maxsize=1)
+def _package_versions() -> dict:
     versions = {}
-    for package in ("qttt", "qiskit", "qiskit-aer", "qiskit-ibm-runtime"):
+    for package in ("qttt", "qiskit", "qiskit-aer", "qiskit-ibm-runtime", "numpy"):
         try:
             versions[package] = metadata.version(package)
         except metadata.PackageNotFoundError:
             versions[package] = None
-    return {"python": platform.python_version(), "packages": versions, **_git_state()}
+    return versions
 
 
 def _git_state(here: Path | None = None) -> dict:
@@ -231,8 +278,8 @@ def _git_state(here: Path | None = None) -> dict:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=here, capture_output=True,
                                 text=True, check=True, timeout=5).stdout.strip()
         # ":/src" is src/ at the repository root; a plain "src" would be read relative to here.
-        dirty = subprocess.run(["git", "status", "--porcelain", "--", ":/src"], cwd=here, capture_output=True,
-                               text=True, check=True, timeout=5).stdout.strip() != ""
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", ":/src", ":/scripts"], cwd=here,
+                               capture_output=True, text=True, check=True, timeout=5).stdout.strip() != ""
     except (OSError, subprocess.SubprocessError):
         return {"git_commit": None, "git_dirty": None}
     return {"git_commit": commit, "git_dirty": dirty}
@@ -266,16 +313,27 @@ def _run_fields(run, backend) -> dict:
     }
 
 
-def _profile_summary(profile) -> dict | None:
+def profile_summary(profile) -> dict | None:
+    """A NoiseProfile as saved in records; NoiseProfile.from_record reads it back."""
     if profile is None:
         return None
+
+    def optional(values):
+        return None if values is None else list(values)
+
     return {
         "source": profile.source,
         "epsilon": profile.epsilon,
         "readout": [list(row) for row in profile.readout],
-        "line_qubits": None if profile.line_qubits is None else list(profile.line_qubits),
+        "line_qubits": optional(profile.line_qubits),
         "calibration_id": profile.calibration_id,
         "bit_factors": list(profile.bit_factors),
-        "no_win_shares": None if profile.no_win_shares is None else list(profile.no_win_shares),
+        "no_win_shares": optional(profile.no_win_shares),
         "no_win_shots": profile.no_win_shots,
+        "no_win_errors": optional(profile.no_win_errors),
+        "no_win_spread": optional(profile.no_win_spread),
+        "double_factor": profile.double_factor,
+        "calibration_shots": profile.calibration_shots,
+        "signal_errors": optional(profile.signal_errors),
+        "template": profile.template,
     }

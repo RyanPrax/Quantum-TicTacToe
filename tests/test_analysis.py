@@ -2,11 +2,11 @@
 
 import pytest
 
-from qttt.analysis import Job, jobs, summarize, wrong_winners
+from qttt.analysis import Job, describe, jobs, summarize, verdict, wrong_winners
 from qttt.backends import IdealBackend
 from qttt.experiments import collect, sample_boards
 from qttt.noise import NoiseProfile
-from qttt.results import RunStore, _profile_summary
+from qttt.results import RunStore, profile_summary
 from qttt.stats import wilson_interval
 
 SEED = 4903
@@ -47,7 +47,7 @@ def test_summary_counts_and_no_wrong_winner(store):
 def _job_with(log10_esp):
     profile = NoiseProfile(0.3, NoiseProfile.from_ideal().readout, "backend:test", line_qubits=(1, 2, 3))
     detection = {"metrics": {"log10_esp": log10_esp}, "backend": {"provider": "x", "name": "y"}, "created": "2026"}
-    return Job([detection], None, {"published_profile": _profile_summary(profile)}), profile
+    return Job([detection], None, {"published_profile": profile_summary(profile)}), profile
 
 
 def test_published_profile_only_when_the_provider_publishes_gate_errors():
@@ -76,3 +76,42 @@ def test_rescore_recomputes_verdicts_from_saved_counts(store):
     strict = {**job.detections[0], "cutoffs": [10**6] * 8}  # as if an older rule had flagged nothing
     rescored = rescore(Job([strict], job.calibration, job.submitted)).detections[0]
     assert rescored["cutoffs"] == job.detections[0]["cutoffs"] and rescored["cutoffs_at_run"] == [10**6] * 8
+
+
+def test_a_version_1_job_is_refitted_by_the_current_rule(store):
+    import json
+
+    lines = store.runs_file.read_text().splitlines()
+    old = []
+    for line in lines:
+        record = json.loads(line)
+        record["schema"] = 1
+        if record["kind"] == "detection":  # version 1 kept a full copy, with no-win shares by an older rule
+            calibration = next(json.loads(x) for x in lines if json.loads(x)["id"] == record["calibration_id"])
+            record["profile"] = {**calibration["profile"], "no_win_shares": [0.5] * 8,
+                                 "calibration_id": record["calibration_id"]}
+        old.append(json.dumps(record))
+    store.runs_file.write_text("\n".join(old) + "\n")
+    for job in jobs(RunStore(store.root), hardware_only=False):
+        assert job.measured_profile.no_win_shares != (0.5,) * 8
+        assert job.measured_profile.calibration_id == job.calibration["id"]
+
+
+def test_a_detection_that_names_its_calibration_reads_the_profile_from_it(store):
+    for job in jobs(store, hardware_only=False):
+        assert job.first["profile"] == {"calibration_id": job.calibration["id"]}
+        assert job.measured_profile == NoiseProfile.from_record(job.calibration["profile"])
+
+
+@pytest.mark.parametrize(("true", "found", "expected"), [
+    ([], [], "correct"), ([], [3], "WRONG"), ([6], [6], "correct"), ([6], [], "MISSED"),
+    ([0, 3], [0], "partly missed"), ([0, 3], [0, 3], "correct"), ([6], [2], "WRONG"),
+])
+def test_verdict(true, found, expected):
+    assert verdict({"true_lines": true, "lines": found}) == expected
+
+
+def test_describe():
+    assert describe({"board": "XXXOO    ", "player": "X", "true_lines": [0]}) == "X wins the top row (turn 5)"
+    assert describe({"board": "XOX      ", "player": "X", "true_lines": [], "turn": 3}) == \
+        "no winner (X just moved, turn 3)"

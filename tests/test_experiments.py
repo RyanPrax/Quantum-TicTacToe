@@ -1,5 +1,6 @@
 """Labeled data collection."""
 
+import argparse
 import importlib.util
 from pathlib import Path
 
@@ -124,6 +125,25 @@ def test_collect_script_compile_flags(tmp_path, capsys):
     assert record["backend"]["options"]["ancilla"] is True
 
 
+def test_collect_script_dry_run_without_a_mock_device(capsys):
+    # IBM dry-runs on "mock_<device>"; an account that cannot see it gets a message, not a traceback.
+    from qiskit.providers.exceptions import QiskitBackendNotFoundError
+
+    class NoMockDevice:
+        name, simulated = "ibm_marrakesh", False
+
+        def dry_run(self, circuits, shots):
+            raise QiskitBackendNotFoundError("Unable to use `dry_run` mode: backend 'mock_marrakesh' was not found")
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "collect.py"
+    spec = importlib.util.spec_from_file_location("collect_script", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    assert script._dry_run(NoMockDevice(), [], argparse.Namespace(variant="player"), 2048, calibrate=False) == 1
+    out = capsys.readouterr().out
+    assert "could not dry-run on ibm_marrakesh" in out and "Nothing was sent." in out
+
+
 def test_mix_mapping_must_match_n():
     assert len(sample_boards(3, seed=SEED, mix={"single_win": 3})) == 3
     with pytest.raises(ValueError, match="adds up to 3"):
@@ -143,9 +163,9 @@ def test_choose_shots_calibrates_once_and_saves_it(tmp_path):
     store = RunStore(tmp_path)
     shots, profile = choose_shots(IdealBackend(seed=SEED), store=store, tag="auto")
     assert 64 <= shots <= 1024  # a perfect simulator needs few shots
-    assert shots == profile.shots_needed(0.01, profile_budget(), 4096)
+    assert shots == profile.shots_needed(0.01, profile_budget(), 4096, in_job=True)
     (calibration,) = store.load("calibration", tag="auto")
-    assert len(calibration["known"]) == len(calibration["profile"]["readout"]) + 2  # 8 single wins, 2 no-win
+    assert len(calibration["known"]) == len(calibration["profile"]["readout"]) + 4  # 8 single, 2 no-win, 2 double
 
 
 def profile_budget():
@@ -258,3 +278,72 @@ def test_balanced_mix_uses_every_double_win_twice_then_splits_evenly():
     doubles = Counter(b.board for b in boards if b.label == "double_win")
     assert len(doubles) == 22 and set(doubles.values()) == {2}
     assert Counter(b.label for b in sample_boards(9, seed=SEED)) == {"no_win": 3, "single_win": 3, "double_win": 3}
+
+
+def _save_variant_of(store, record, tag, **profile_fields):
+    from qttt.backends import JobOutput
+    from qttt.noise import NoiseProfile
+
+    profile = NoiseProfile.from_record({**record["profile"], **profile_fields})
+    counts = tuple(map(tuple, record["readout_counts"])) + tuple(tuple(k["counts"]) for k in record["known"])
+    store.save_calibration(profile, JobOutput(counts, None), IdealBackend(seed=SEED),
+                           [(k["board"], k["player"]) for k in record["known"]], tag=tag)
+
+
+def test_saved_calibrations_of_another_compiled_circuit_are_refused(tmp_path):
+    from qttt.experiments import saved_profile
+
+    store = RunStore(tmp_path)
+    _two_saved_calibrations(store)
+    (record,) = store.load("calibration", tag="cal-1")
+    assert record["profile"]["template"]["gates_sha256"]
+    _save_variant_of(store, record, "other-circuit", template={**record["profile"]["template"], "gates_sha256": "0"})
+    with pytest.raises(ValueError, match="compiled circuit differs"):
+        saved_profile(store, ["other-circuit"], IdealBackend(seed=SEED))
+    # A different transpile seed that found the same circuit still fits.
+    _save_variant_of(store, record, "other-seed", template={**record["profile"]["template"], "transpile_seed": 99})
+    saved_profile(store, ["other-seed"], IdealBackend(seed=SEED))
+
+
+def test_old_calibrations_without_a_template_or_line_qubits(tmp_path):
+    from qttt.experiments import saved_profile
+
+    store = RunStore(tmp_path)
+    _two_saved_calibrations(store)
+    (record,) = store.load("calibration", tag="cal-1")
+    _save_variant_of(store, record, "no-template", template=None)
+    with pytest.warns(UserWarning, match="without their compiled circuit"):
+        saved_profile(store, ["no-template"], IdealBackend(seed=SEED))
+    _save_variant_of(store, record, "no-qubits", line_qubits=None)
+    with pytest.raises(ValueError, match="does not say which line qubits"):
+        saved_profile(store, ["no-qubits"], IdealBackend(seed=SEED))
+
+
+def test_auto_shots_still_calibrate_in_every_batch_job(tmp_path, monkeypatch):
+    path = Path(__file__).resolve().parent.parent / "scripts" / "collect.py"
+    spec = importlib.util.spec_from_file_location("collect_script", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    passed = {}
+    real_collect = script.collect
+
+    def spy(*args, **kwargs):
+        passed.update(kwargs)
+        return real_collect(*args, **kwargs)
+    monkeypatch.setattr(script, "collect", spy)
+    assert script.main(["--n", "2", "--seed", "1", "--shots", "auto", "--store", str(tmp_path), "--tag", "auto"]) == 0
+    # The calibration that chose the shots is not reused: each batch job calibrates at the chosen shots (on a
+    # noisy backend), as the message about calibration circuits per job says.
+    assert passed["profile"] == "auto"
+    (calibration,) = RunStore(tmp_path).load("calibration", tag="auto")  # the one that chose the shots
+
+
+@pytest.mark.parametrize("argv", [["--n", "0"], ["--shots", "0"], ["--boards-per-job", "0"], ["--n", "x"]])
+def test_collect_script_refuses_bad_numbers(argv, tmp_path):
+    path = Path(__file__).resolve().parent.parent / "scripts" / "collect.py"
+    spec = importlib.util.spec_from_file_location("collect_script", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    with pytest.raises(SystemExit) as info:
+        script.main([*argv, "--store", str(tmp_path)])
+    assert info.value.code == 2  # an argparse error, not a traceback

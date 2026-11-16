@@ -309,3 +309,42 @@ def test_ideal_backend_scores_by_two_qubit_gates_only():
     m = backend.metrics(template)
     assert m.log10_idle is None and m.log10_readout is None
     assert backend.score(template)[0] == 0.0
+
+
+@pytest.mark.slow
+def test_board_metrics_match_full_metrics(berlin):
+    template = berlin.metrics(berlin.search_template("player"))
+    for board in BOARDS[:3]:
+        tqc = berlin.search_circuit("player", board, _last_player(board))
+        assert berlin.board_metrics(tqc, template) == berlin.metrics(tqc)
+
+
+@pytest.mark.slow
+def test_fetch_reads_back_what_the_job_returned(monkeypatch):
+    # A real device's job is fetched again through service.job(id).result(), which decodes the stored result with
+    # the same client-side Sampler post-processing as the first time (checked against a saved ibm_marrakesh job).
+    # Here the runtime Sampler runs a fake backend locally, and the stand-in service hands back that job's result.
+    from qiskit_ibm_runtime.executor_sampler import Sampler as RuntimeSampler
+    from qiskit_ibm_runtime.fake_provider import FakeProviderForBackendV2
+
+    device = IBMBackend(FakeProviderForBackendV2().backend("fake_berlin"), seed=SEED, simulate=False)
+    circuits = [device.search_circuit("player", board, _last_player(board)) for board in BOARDS[:3]]
+    results = {}
+    run = RuntimeSampler.run
+
+    def remember(self, *args, **kwargs):
+        job = run(self, *args, **kwargs)
+        result = job.result()
+        results[job.job_id()] = result
+        job.result = lambda: result  # a local job decodes again on every call; the service fetches afresh
+        return job
+    monkeypatch.setattr(RuntimeSampler, "run", remember)
+
+    out = device.run(circuits, 64)
+
+    class Service:
+        def job(self, job_id):
+            return type("Job", (), {"result": lambda self: results[job_id]})()
+    monkeypatch.setattr(device.backend, "service", Service(), raising=False)
+    assert device.fetch(out.job_id) == out
+    assert len(out.counts) == 3 and all(sum(c) == 64 for c in out.counts)

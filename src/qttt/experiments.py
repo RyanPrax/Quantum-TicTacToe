@@ -9,12 +9,14 @@ results against the labels.
 """
 
 import random
+import warnings
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
-from qttt.backends import Backend, JobOutput
+from qttt import analysis
+from qttt.backends import Backend, JobOutput, template_fingerprint, template_mismatch
 from qttt.board import EMPTY, O, X, boards_by_win_count, classical_winning_lines
 from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS, DetectionResult, detect_winners
 from qttt.noise import NoiseProfile
@@ -148,9 +150,13 @@ def choose_shots(backend: Backend, variant: str = "player", budget: float = DEFA
     interrupted), and its calibration is saved to store (default results/).
     Returns the shots that calibration's profile predicts for at most
     MISS_TARGET misses within the false-flag budget, capped at max_shots, with
-    the profile. When some line's winner cannot be told from a loser at any shot
-    count up to the cap, the cap is returned; profile.miss_rates(shots, budget)
-    shows what that costs.
+    the profile. The prediction takes the batch to calibrate in its own jobs at
+    those shots (profile.shots_needed(..., in_job=True)), as collect() does by
+    default, so its measured losing shares get as precise as the boards: this
+    profile chooses the shots, it does not set the batch's cutoffs. When some
+    line's winner cannot be told from a loser at any shot count up to the cap,
+    the cap is returned; profile.with_calibration_shots(shots).miss_rates(shots,
+    budget) shows what that costs.
     """
     if store is None:
         store = RunStore()
@@ -159,7 +165,7 @@ def choose_shots(backend: Backend, variant: str = "player", budget: float = DEFA
     submitted = [r for r in store.load("job") if r["status"] == "submitted"][-1]
     (record,) = [r for r in store.load("calibration") if r.get("job_record") == submitted["id"]]
     profile = replace(NoiseProfile.from_record(record["profile"]), calibration_id=record["id"])
-    return profile.shots_needed(MISS_TARGET, budget, max_shots) or max_shots, profile
+    return profile.shots_needed(MISS_TARGET, budget, max_shots, in_job=True) or max_shots, profile
 
 
 def default_tag() -> str:
@@ -172,17 +178,24 @@ def saved_profile(store: RunStore, tags: Sequence[str], backend: Backend,
     """One profile from calibrations saved earlier (found by tag), so a batch can skip its own calibration.
 
     Each calibration must have run on this backend with the same Sampler
-    options and variant, and on the line qubits this backend's search circuit
-    reads out on now (a device can move them when it is recalibrated). Their
-    readout counts and known boards are pooled and fitted as one calibration.
-    Returns the profile and the records; save_pooled_calibration records it.
+    options and variant, on the line qubits this backend's search circuit
+    reads out on now (a device can move them when it is recalibrated), and on
+    the same compiled circuit (ancilla, two-qubit gates, transpile seed and
+    layout: backends.template_fingerprint), since ε depends on all of it.
+    Records saved before templates were recorded cannot be checked for that and
+    give a warning. Their readout counts and known boards are pooled and fitted
+    as one calibration. Returns the profile and the records;
+    save_pooled_calibration records it.
     """
     records = [r for r in store.load("calibration") if r["tag"] in set(tags)]
     missing = set(tags) - {r["tag"] for r in records}
     if missing:
         raise ValueError(f"no calibration saved with tag {', '.join(sorted(missing))}")
-    line_qubits = backend.metrics(backend.search_template(variant)).line_qubits
+    template = backend.search_template(variant)
+    line_qubits = backend.metrics(template).line_qubits
+    fingerprint = template_fingerprint(template)
     options = backend.options().get("sampler_options")
+    unchecked = []
     for r in records:
         problems = []
         if r["backend"]["name"] != backend.name:
@@ -192,15 +205,26 @@ def saved_profile(store: RunStore, tags: Sequence[str], backend: Backend,
                             f" this run uses {options or 'none'}")
         if r["variant"] != variant:
             problems.append(f"it is for the {r['variant']} variant")
-        if tuple(r["profile"]["line_qubits"]) != tuple(line_qubits):
-            problems.append(f"it measured line qubits {r['profile']['line_qubits']}, but the circuit now reads out"
+        saved_qubits = r["profile"].get("line_qubits")
+        if saved_qubits is None:
+            problems.append("it does not say which line qubits it measured")
+        elif tuple(saved_qubits) != tuple(line_qubits):
+            problems.append(f"it measured line qubits {saved_qubits}, but the circuit now reads out"
                             f" on {list(line_qubits)}")
+        saved_template = r["profile"].get("template")
+        if saved_template is None:
+            unchecked.append(r["tag"])
+        else:
+            problems += [f"its compiled circuit differs ({d})" for d in template_mismatch(saved_template, fingerprint)]
         if problems:
             raise ValueError(f"calibration {r['tag']} does not fit this run: {'; '.join(problems)}")
+    if unchecked:
+        warnings.warn(f"calibrations {', '.join(unchecked)} were saved without their compiled circuit, so only the"
+                      f" device, options, variant and line qubits could be checked", stacklevel=2)
     readout = [[sum(r["readout_counts"][p][m] for r in records) for m in range(NUM_LINES)] for p in range(NUM_LINES)]
     known = [(tuple(k["board"]), k["counts"]) for r in records for k in r["known"]]
     profile = NoiseProfile.from_calibration(readout, known, source=f"calibration:{backend.name}",
-                                            line_qubits=tuple(line_qubits))
+                                            line_qubits=tuple(line_qubits), template=fingerprint)
     return profile, records
 
 
@@ -268,14 +292,17 @@ class Summary:
 
 
 def summarize(boards: Sequence[LabeledBoard], results: Sequence[DetectionResult]) -> Summary:
-    """Score results against the labels they were collected with (same order)."""
+    """Score results against the labels they were collected with (same order), as analysis.summarize does."""
+    records = [{"label": b.label, "lines": sorted(r.lines), "true_lines": sorted(b.lines),
+                "rejected": list(r.rejected), "candidates": list(r.candidates)}
+               for b, r in zip(boards, results, strict=True)]
     s = Summary(Counter(), Counter(), Counter(), Counter(), Counter())
-    for b, r in zip(boards, results, strict=True):
-        s.boards[b.label] += 1
-        s.wins_found[b.label] += bool(r.lines)
-        s.all_lines_found[b.label] += r.lines == b.lines
-        s.false_flags[b.label] += len(r.rejected)
-        s.checks[b.label] += r.checks
+    for row in analysis.summarize(records):
+        s.boards[row.label] = row.boards
+        s.wins_found[row.label] = row.wins_found
+        s.all_lines_found[row.label] = row.all_lines_found
+        s.false_flags[row.label] = row.false_flags
+        s.checks[row.label] = row.checks
     return s
 
 

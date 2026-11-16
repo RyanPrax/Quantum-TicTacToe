@@ -25,20 +25,22 @@ def binomial_pmf(j, n, q):
 
 
 def binomial_tail(k, n, q):
-    """P(K >= k)"""
+    """P(K >= k), also when q is exactly 0 or 1."""
     if k <= 0:
         return 1.0  # every count is at least 0
     if k > n:
         return 0.0  # a count cannot exceed the shot count
 
-    ret = 0.0
-    for j in range(k, n + 1):
-        ret += exp(binomial_log_pmf(j, n, q))
-    return ret
+    return min(1.0, sum(binomial_pmf(j, n, q) for j in range(k, n + 1)))
 
 
 def _central_range(n, q):
-    """Counts within 12 standard deviations of the mean; terms outside add less than 1e-30."""
+    """Counts within 12 standard deviations of the mean (plus one count on each side).
+
+    Far from the edges the terms outside add less than 1e-30; when n·q is small
+    the binomial is skewed and they can reach about 1e-13 (n = 1000, q = 1e-3),
+    still far below any rate reported here.
+    """
     if not 0 < q < 1:
         return 0, n
     mean, spread = n * q, 12 * sqrt(n * q * (1 - q)) + 1

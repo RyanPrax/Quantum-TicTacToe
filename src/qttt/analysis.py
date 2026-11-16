@@ -8,9 +8,10 @@ provider that publishes no gate errors simply has no published-data profile.
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
+from qttt.board import SHORT_LINE_NAMES
 from qttt.detector import flag_and_check
 from qttt.noise import NoiseProfile
-from qttt.results import LABELS, RunStore, _profile_summary
+from qttt.results import LABELS, RunStore, profile_summary
 from qttt.stats import wilson_interval
 
 
@@ -38,9 +39,18 @@ class Job:
     def measured_profile(self) -> NoiseProfile:
         """The profile the job's cutoffs came from (fitted in the job when it calibrated).
 
-        Read from a detection, whose copy carries the calibration record's id.
+        Read from a detection, or from the calibration record it names
+        (schema 2). A version-1 record's no-win shares may follow an older rule
+        (see qttt.results), so with its calibration counts at hand the profile
+        is fitted again from them, by the current rule.
         """
-        return NoiseProfile.from_record(self.first["profile"])
+        saved = self.first["profile"]
+        if "readout" not in saved:  # only a reference to the calibration record
+            saved = {**self.calibration["profile"], "calibration_id": self.calibration["id"]}
+        profile = NoiseProfile.from_record(saved)
+        if self.first.get("schema", 1) < 2 and self.calibration is not None:
+            return _refit(self.calibration, profile)
+        return profile
 
     @property
     def published_profile(self) -> NoiseProfile | None:
@@ -76,20 +86,26 @@ def rescore(job: Job) -> Job:
     """
     profile = job.measured_profile
     if job.calibration is not None:
-        known = [(tuple(k["board"]), k["counts"]) for k in job.calibration["known"]]
-        profile = replace(NoiseProfile.from_calibration(job.calibration["readout_counts"], known,
-                                                        source=job.calibration["profile"]["source"],
-                                                        line_qubits=profile.line_qubits),
-                          calibration_id=job.calibration["id"])
+        profile = _refit(job.calibration, profile)
     detections = []
     for r in job.detections:
         cutoffs = profile.cutoffs(r["shots"], r["budget"])
-        verdict = flag_and_check(tuple(r["board"]), r["counts"], cutoffs)
+        verdict = flag_and_check(tuple(r["board"]), r["counts"], cutoffs, r["player"])
         detections.append({**r, "cutoffs_at_run": r["cutoffs"], "lines_at_run": r["lines"],
-                           "profile": _profile_summary(profile), "cutoffs": list(cutoffs),
+                           "profile": profile_summary(profile), "cutoffs": list(cutoffs),
                            "candidates": list(verdict.candidates), "rejected": list(verdict.rejected),
                            "lines": sorted(verdict.lines), "winner": verdict.winner})
     return Job(detections, job.calibration, job.submitted)
+
+
+def _refit(calibration: dict, profile: NoiseProfile) -> NoiseProfile:
+    """The profile fitted again from a calibration record's counts by the current rule."""
+    known = [(tuple(k["board"]), k["counts"]) for k in calibration["known"]]
+    return replace(NoiseProfile.from_calibration(calibration["readout_counts"], known,
+                                                 source=calibration["profile"]["source"],
+                                                 line_qubits=profile.line_qubits,
+                                                 template=calibration["profile"].get("template")),
+                   calibration_id=calibration["id"])
 
 
 @dataclass(frozen=True)
@@ -128,3 +144,22 @@ def summarize(detections: list[dict]) -> list[LabelSummary]:
 def wrong_winners(detections: list[dict]) -> list[dict]:
     """Detections that reported a line that is not a real win (the classical check makes this impossible)."""
     return [r for r in detections if not set(r["lines"]) <= set(r["true_lines"])]
+
+
+def describe(detection: dict) -> str:
+    """A saved board in words: who just moved, on which turn, and its real winning lines."""
+    turn = detection.get("turn") or 9 - detection["board"].count(" ")
+    if not detection["true_lines"]:
+        return f"no winner ({detection['player']} just moved, turn {turn})"
+    lines = " and ".join(SHORT_LINE_NAMES[i] for i in detection["true_lines"])
+    return f"{detection['player']} wins the {lines} (turn {turn})"
+
+
+def verdict(detection: dict) -> str:
+    """"correct", "partly missed" (a double win with one line found), "MISSED" or "WRONG" (a line that is no win)."""
+    true, found = set(detection["true_lines"]), set(detection["lines"])
+    if not found <= true:
+        return "WRONG"
+    if found == true:
+        return "correct"
+    return "partly missed" if found else "MISSED"
