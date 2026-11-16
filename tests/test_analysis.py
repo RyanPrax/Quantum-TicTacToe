@@ -64,6 +64,11 @@ def test_wilson_interval(k, n, low, high):
     assert wilson_interval(0, 0) == (0.0, 1.0)
 
 
+def test_wilson_interval_always_contains_the_rate():
+    # Rounding once put the bound just past p at 0 or n successes (e.g. 6 of 6), which broke found_by_job's whiskers.
+    assert all(lo <= k / n <= hi for n in range(1, 300) for k in range(n + 1) for lo, hi in [wilson_interval(k, n)])
+
+
 def test_rescore_recomputes_verdicts_from_saved_counts(store):
     from qttt.analysis import rescore
 

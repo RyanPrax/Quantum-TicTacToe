@@ -52,6 +52,7 @@ def test_count_grid_scores_each_panel():
 def test_found_by_job():
     fig = plots.found_by_job([("job a", 3, 4), ("job b", 0, 0)], "t")
     assert [t.get_text() for t in fig.axes[0].texts] == ["3/4", "0/0"]
+    plots.found_by_job([("all found", 6, 6), ("none found", 0, 11)], "t")  # whiskers at the edges
 
 
 def test_board_result_draws_every_line_with_its_share():

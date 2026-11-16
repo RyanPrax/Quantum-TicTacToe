@@ -106,4 +106,5 @@ def wilson_interval(successes: int, trials: int, z: float = 1.96) -> tuple[float
     p = successes / trials
     centre = (p + z * z / (2 * trials)) / (1 + z * z / trials)
     half = z * sqrt(p * (1 - p) / trials + z * z / (4 * trials * trials)) / (1 + z * z / trials)
-    return (max(0.0, centre - half), min(1.0, centre + half))
+    # At 0 or n successes the bound equals p exactly; clamp so rounding cannot put it on the wrong side.
+    return (min(p, max(0.0, centre - half)), max(p, min(1.0, centre + half)))
