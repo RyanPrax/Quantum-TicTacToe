@@ -202,3 +202,43 @@ def test_git_dirty_sees_changes_under_scripts(tmp_path):
     assert _git_state(package)["git_dirty"] is False
     (tmp_path / "scripts" / "run.py").write_text("y = 2\n")
     assert _git_state(package)["git_dirty"] is True
+
+
+def test_dirty_runs_save_a_patch_that_rebuilds_the_code(tmp_path, monkeypatch):
+    from qttt import results
+
+    repo = tmp_path / "repo"
+    package = repo / "src" / "pkg"
+    package.mkdir(parents=True)
+    (package / "code.py").write_text("x = 1\n")
+    (repo / "notes.md").write_text("draft\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo)]
+    for args in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
+        subprocess.run(git + args, check=True)
+    (repo / "notes.md").write_text("edited docs only\n")
+    assert _git_state(package)["git_dirty"] is False  # docs do not count
+    (package / "code.py").write_text("x = 2\n")
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "new.py").write_text("y = 1\n")  # not yet added to git
+    monkeypatch.setattr(results, "_git_state", lambda: _git_state(package))
+    monkeypatch.setattr(results, "_git_cache", None)
+    store = RunStore(tmp_path / "results")
+    first, second = (store._append({"kind": "test"}, None) for _ in range(2))
+    records = {r["id"]: r["provenance"] for r in store.load()}
+    assert records[first]["git_dirty"] and records[first]["patch"] == records[second]["patch"]  # saved once
+    assert "diff" not in records[first]
+    assert len(list(store.patches_dir.iterdir())) == 1
+    patch = store.root / records[first]["patch"]
+    subprocess.run(git + ["stash", "-qu"], check=True)  # back to the commit
+    subprocess.run(git + ["apply", str(patch)], check=True)
+    assert (package / "code.py").read_text() == "x = 2\n"
+    assert (repo / "scripts" / "new.py").read_text() == "y = 1\n"
+
+
+def test_clean_runs_save_no_patch(store, monkeypatch):
+    from qttt import results
+
+    monkeypatch.setattr(results, "_git_state", lambda: {"git_commit": "c", "git_dirty": False, "diff": ""})
+    monkeypatch.setattr(results, "_git_cache", None)
+    store._append({"kind": "test"}, None)
+    assert "patch" not in store.load()[0]["provenance"] and not store.patches_dir.exists()

@@ -7,7 +7,10 @@ board's few gates, so load_circuit() rebuilds the exact circuit. A job leaves a
 "job" record as soon as it is submitted and another with its raw counts as soon
 as they are back, so a crash or a lost kernel never loses a job that ran
 (finish one with qttt.detector.resume_job). Records are
-only ever appended: nothing here edits or deletes a past run. Commit the files
+only ever appended: nothing here edits or deletes a past run. A record made while src/, scripts/ or pyproject.toml
+had uncommitted changes (provenance "git_dirty") also names a patch,
+<root>/patches/<hash>.patch, holding those changes: check out its "git_commit"
+and `git apply` the patch to get back the exact code that made it. Commit the files
 to keep them; load them back with RunStore.load() (or pandas.read_json(path,
 lines=True)).
 
@@ -26,6 +29,7 @@ Readers refit a version-1 profile from its calibration counts where they have
 them (qttt.analysis.Job.measured_profile).
 """
 
+import hashlib
 import json
 import os
 import platform
@@ -65,6 +69,7 @@ class RunStore:
         self.root = Path(root)
         self.runs_file = self.root / "runs.jsonl"
         self.circuits_dir = self.root / "circuits"
+        self.patches_dir = self.root / "patches"
         self._records: tuple[tuple[int, int], list[dict]] | None = None  # (file size, mtime) and its parsed records
         self._circuits: dict[str, object] = {}  # circuit file -> loaded circuit
 
@@ -220,6 +225,14 @@ class RunStore:
                 self._circuits[record["circuit_file"]] = qpy.load(f)[0]
         return self._circuits[record["circuit_file"]].copy()
 
+    def _save_patch(self, diff: str) -> str:
+        """Save uncommitted code changes once, named by their content, so the records they made can share it."""
+        self.patches_dir.mkdir(exist_ok=True)
+        path = self.patches_dir / f"{hashlib.sha256(diff.encode()).hexdigest()[:16]}.patch"
+        if not path.exists():
+            path.write_text(diff, encoding="utf-8")
+        return path.relative_to(self.root).as_posix()
+
     def _append(self, record: dict, circuit) -> str:
         record_id = uuid.uuid4().hex
         record = {
@@ -230,6 +243,8 @@ class RunStore:
             "provenance": provenance(),
         }
         self.root.mkdir(parents=True, exist_ok=True)
+        if record["provenance"]["git_dirty"] and _git_cache[1].get("diff"):
+            record["provenance"]["patch"] = self._save_patch(_git_cache[1]["diff"])
         if circuit is not None:
             self.circuits_dir.mkdir(exist_ok=True)
             path = self.circuits_dir / f"{record_id}.qpy"
@@ -258,7 +273,8 @@ def provenance() -> dict:
     now = time.monotonic()
     if _git_cache is None or now - _git_cache[0] > GIT_STATE_SECONDS:
         _git_cache = (now, _git_state())
-    return {"python": platform.python_version(), "packages": _package_versions(), **_git_cache[1]}
+    git = {key: value for key, value in _git_cache[1].items() if key != "diff"}
+    return {"python": platform.python_version(), "packages": _package_versions(), **git}
 
 
 @lru_cache(maxsize=1)
@@ -272,17 +288,33 @@ def _package_versions() -> dict:
     return versions
 
 
+CODE_PATHS = (":/src", ":/scripts", ":/pyproject.toml")  # what git_dirty and the patch cover; ":/" is the repo root
+
+
 def _git_state(here: Path | None = None) -> dict:
+    """The commit, whether the code differs from it, and the difference as a patch for `git apply` ("diff").
+
+    Only the code counts (CODE_PATHS), so editing notebooks or docs does not make a run dirty. New files
+    that git does not ignore are in the patch too.
+    """
     here = here or Path(__file__).resolve().parent
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=here, capture_output=True, text=True, check=True,
+                              timeout=5).stdout
+
     try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=here, capture_output=True,
-                                text=True, check=True, timeout=5).stdout.strip()
-        # ":/src" is src/ at the repository root; a plain "src" would be read relative to here.
-        dirty = subprocess.run(["git", "status", "--porcelain", "--", ":/src", ":/scripts"], cwd=here,
-                               capture_output=True, text=True, check=True, timeout=5).stdout.strip() != ""
+        commit = git("rev-parse", "HEAD").strip()
+        top = git("rev-parse", "--show-toplevel").strip()
+        diff = git("diff", "HEAD", "--binary", "--", *CODE_PATHS)
+        for name in git("ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", *CODE_PATHS
+                        ).split("\0"):
+            if name:  # --no-index exits 1 when the files differ, which a new file always does
+                diff += subprocess.run(["git", "diff", "--no-index", "--binary", "--", "/dev/null", name], cwd=top,
+                                       capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         return {"git_commit": None, "git_dirty": None}
-    return {"git_commit": commit, "git_dirty": dirty}
+    return {"git_commit": commit, "git_dirty": diff != "", "diff": diff}
 
 
 def _backend_fields(backend) -> dict:
