@@ -25,7 +25,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install
-        run: pip install -e ".[dev]"
+        # The runner's Python 3.11 ships an old setuptools that pip-audit flags; the project builds with its own.
+        run: |
+          pip install --upgrade "setuptools>=84.1"
+          pip install -e ".[dev]"
       - name: Lint
         run: ruff check .
       - name: Fast tests
