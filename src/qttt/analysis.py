@@ -41,6 +41,20 @@ class Job:
         return f"{device} {self.first['created'][:10]}"
 
     @property
+    def suppression(self) -> str:
+        """The error suppression the job ran with, e.g. "off" or "dynamical decoupling (XY4), gate twirling"."""
+        options = self.backend["options"].get("sampler_options") or {}
+        parts = []
+        if options.get("dynamical_decoupling", {}).get("enable"):
+            sequence = options["dynamical_decoupling"].get("sequence_type")
+            parts.append(f"dynamical decoupling ({sequence})" if sequence else "dynamical decoupling")
+        twirling = options.get("twirling", {})
+        parts += [f"{name} twirling" for key, name in (("enable_gates", "gate"), ("enable_measure", "measurement"))
+                  if twirling.get(key)]
+        other = sorted(set(options) - {"dynamical_decoupling", "twirling"})
+        return ", ".join(parts + other) or "off"
+
+    @property
     def measured_profile(self) -> NoiseProfile:
         """The profile the job's cutoffs came from (fitted in the job when it calibrated).
 

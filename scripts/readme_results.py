@@ -81,7 +81,10 @@ def hardware_row():
     low, high = wilson_interval(found, len(with_winner))
     assert not wrong_winners(detections)
     devices = ", ".join(sorted({job.backend["name"] for job in saved}))
-    return (f"{len(detections)} boards on {devices}: wins found on {found} of {len(with_winner)} "
+    suppression = {job.suppression for job in saved}
+    suppression = (f"error suppression {suppression.pop()}" if len(suppression) == 1
+                   else "error suppression differs between jobs")
+    return (f"{len(detections)} boards on {devices} ({suppression}): wins found on {found} of {len(with_winner)} "
             f"(95% interval {low:.0%}–{high:.0%}); no wrong winner reported")
 
 

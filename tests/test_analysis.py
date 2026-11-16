@@ -3,7 +3,7 @@
 import pytest
 
 from qttt.analysis import Job, describe, examples, jobs, margin, outcome, summarize, verdict, wrong_winners
-from qttt.backends import IdealBackend
+from qttt.backends import ERROR_SUPPRESSION_OPTIONS, IdealBackend
 from qttt.experiments import collect, sample_boards
 from qttt.noise import NoiseProfile
 from qttt.results import RunStore, profile_summary
@@ -153,3 +153,13 @@ def test_examples_pick_the_median_board_of_each_group_correct_ones_first():
 def test_label_names_the_provider_only_when_the_device_does_not(provider, name, label):
     detection = {"backend": {"provider": provider, "name": name}, "created": "2026-11-20T10:00:00+00:00"}
     assert Job([detection], None, None).label == label
+
+
+@pytest.mark.parametrize(("options", "text"), [
+    ({}, "off"), (None, "off"), (ERROR_SUPPRESSION_OPTIONS, "dynamical decoupling (XY4), gate twirling"),
+    ({"twirling": {"enable_gates": False, "enable_measure": True}, "resilience_level": 1},
+     "measurement twirling, resilience_level"),
+])
+def test_suppression_names_the_sampler_options(options, text):
+    detection = {"backend": {"options": {"sampler_options": options}}}
+    assert Job([detection], None, None).suppression == text

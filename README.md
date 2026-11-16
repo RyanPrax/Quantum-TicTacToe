@@ -18,7 +18,7 @@ on IBM's quantum computers.
 | :--- | :--- | :--- |
 | **Circuit** | 22 → 12 qubits, 2702 → 481 two-qubit gates (5.6× fewer), chance no gate fails (ESP) 0.2% → 44.5% on a simulated ibm_kingston | [01_how_it_works](notebooks/01_how_it_works.ipynb) |
 | **Simulated noise** | Signal survives on all 3 free-plan devices, but measured noise is 0.03–0.14 above IBM's published figures; shots for ≤1% missed wins: kingston 256 (published data: 64), marrakesh 1536 (published data: 128), fez 7616 (published data: 192) | [02_noise](notebooks/02_noise.ipynb) |
-| **Real hardware** | 48 boards on ibm_marrakesh: wins found on 22 of 32 (95% interval 51%–82%); no wrong winner reported | [03_hardware](notebooks/03_hardware.ipynb) |
+| **Real hardware** | 330 boards on ibm_kingston, ibm_marrakesh (error suppression off): wins found on 185 of 195 (95% interval 91%–97%); no wrong winner reported | [03_hardware](notebooks/03_hardware.ipynb) |
 <!-- results:end -->
 
 ## Read the notebooks
@@ -54,8 +54,8 @@ hardware.
   the only count that separates single, double and no win; per-line cutoffs
   set from a binomial false-flag budget; every flagged line confirmed
   classically, so noise can never produce a wrong winner.
-- **In-job calibration:** 20 calibration circuits in every job measure the
-  readout matrix, gate noise and per-bit signal on the day, instead of
+- **In-job calibration:** up to 20 calibration circuits in every job measure
+  the readout matrix, gate noise and per-bit signal on the day, instead of
   trusting published calibration data, which understates the noise.
 - **Real-hardware runs:** jobs on IBM devices saved with full provenance and
   re-scored from their saved counts whenever the analysis changes.
