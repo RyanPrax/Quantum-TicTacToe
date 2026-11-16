@@ -29,7 +29,7 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Fast tests
-        # Slow tests (fake-device noise, every board, notebook runs) take tens of minutes; run them locally.
+        # Slow tests (fake-device noise, every board, notebook runs) take tens of minutes: slow-tests.yml runs them.
         run: pytest -m "not slow"
       - name: Known vulnerabilities in dependencies
         run: |
