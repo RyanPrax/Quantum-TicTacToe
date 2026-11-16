@@ -4,13 +4,14 @@
 
 Writes figures/circuit_versions.png and rewrites the block between the
 "results:start" and "results:end" markers in README.md. The numbers are the
-ones the notebooks compute, with the same devices, boards and seeds: the
-circuit comparison from 01_how_it_works, the noise-model runs from 02_noise
-(about 10 minutes) and the hardware jobs from 03_hardware. Run it after the
-notebooks change or a hardware job is saved, then commit README.md and the
-figure.
+ones the notebooks compute: the circuit comparison from 01_how_it_works
+(compiled again, with the same device and seed), the noise-model results that
+02_noise saves to results/noise_summary.json when it runs, and the hardware
+jobs from 03_hardware. Takes seconds. Run it after the notebooks change or a
+hardware job is saved, then commit README.md and the figure.
 """
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -22,20 +23,16 @@ matplotlib.use("Agg")
 from qttt import plots  # noqa: E402
 from qttt.analysis import jobs, rescore, wrong_winners  # noqa: E402
 from qttt.backends import get_backend  # noqa: E402
-from qttt.board import EMPTY, O, X  # noqa: E402
-from qttt.detector import DEFAULT_BUDGET, DEFAULT_SHOTS, detect_winners  # noqa: E402
+from qttt.board import EMPTY, X  # noqa: E402
 from qttt.grover import build_phase_kickback_circuit, build_search_circuit  # noqa: E402
-from qttt.noise import NoiseProfile  # noqa: E402
 from qttt.results import RunStore  # noqa: E402
 from qttt.stats import wilson_interval  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 FIGURE = ROOT / "figures" / "circuit_versions.png"
+NOISE_SUMMARY = ROOT / "results" / "noise_summary.json"
 SEED = 4903
-DEVICES = ("fake_kingston", "fake_marrakesh", "fake_fez")
-_ = EMPTY
-BOARDS = [((X, O, X, O, X, O, _, _, X), X), ((X, X, X, X, O, O, X, O, O), X), ((X, O, X, X, O, O, O, X, X), X)]
 NOTEBOOK = "notebooks/{}.ipynb"
 
 
@@ -43,7 +40,7 @@ def circuit_row():
     kingston = get_backend("fake_kingston", seed=SEED, transpile_seeds=5)
     empty = [EMPTY] * 9
     versions = {
-        "class version: 2 qubits per cell": build_search_circuit("full", empty),
+        "original: 2 qubits per cell": build_search_circuit("full", empty),
         "1 qubit per cell + phase qubit": build_phase_kickback_circuit(empty, X),
         "1 qubit per cell, direct sign flip": build_search_circuit("player", empty, X),
     }
@@ -61,15 +58,15 @@ def circuit_row():
 
 
 def noise_row():
+    """From the numbers 02_noise saves when it runs, so the README shows exactly what the notebook found."""
+    if not NOISE_SUMMARY.exists():
+        sys.exit(f"{NOISE_SUMMARY.relative_to(ROOT)} is missing: run notebooks/02_noise.ipynb first")
+    devices = json.loads(NOISE_SUMMARY.read_text())["devices"]
     parts, gaps = [], []
-    for name in DEVICES:
-        backend = get_backend(name, seed=SEED, transpile_seeds=5)
-        measured = detect_winners(BOARDS, shots=DEFAULT_SHOTS, budget=DEFAULT_BUDGET, backend=backend)[0].profile
-        published = NoiseProfile.from_backend(backend, "player")
-        gaps.append(measured.epsilon - published.epsilon)
-        need = measured.shots_needed(0.01, DEFAULT_BUDGET) or "more than 16384"
-        parts.append(f"{name.removeprefix('fake_')} {need} (published data: "
-                     f"{published.shots_needed(0.01, DEFAULT_BUDGET) or 'more than 16384'})")
+    for label, d in devices.items():
+        gaps.append(d["epsilon_measured"] - d["epsilon_published"])
+        parts.append(f"{label} {d['shots_needed_measured'] or 'more than 16384'} (published data: "
+                     f"{d['shots_needed_published'] or 'more than 16384'})")
     return (f"Signal survives on all 3 free-plan devices, but measured noise is {min(gaps):.2f}–{max(gaps):.2f} "
             f"above IBM's published figures; shots for ≤1% missed wins: {', '.join(parts)}")
 

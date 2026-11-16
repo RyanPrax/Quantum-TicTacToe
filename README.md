@@ -5,7 +5,7 @@
 Tic-tac-toe where a quantum circuit decides who won. After every move from
 turn 5 on, one step of Grover's search over the 8 winning lines points at the
 line the player just completed, if any, and only that line is checked on the
-board. The project takes the circuit from a 22-qubit class version to 12
+board. The project takes the circuit from the original 22-qubit version to 12
 qubits, measures how much of its signal survives realistic noise, and runs it
 on IBM's quantum computers.
 
@@ -18,11 +18,8 @@ on IBM's quantum computers.
 | :--- | :--- | :--- |
 | **Circuit** | 22 → 12 qubits, 2702 → 481 two-qubit gates (5.6× fewer), chance no gate fails (ESP) 0.2% → 44.5% on a simulated ibm_kingston | [01_how_it_works](notebooks/01_how_it_works.ipynb) |
 | **Simulated noise** | Signal survives on all 3 free-plan devices, but measured noise is 0.03–0.14 above IBM's published figures; shots for ≤1% missed wins: kingston 256 (published data: 64), marrakesh 1536 (published data: 128), fez 7616 (published data: 192) | [02_noise](notebooks/02_noise.ipynb) |
-| **Real hardware** | 3 boards on ibm_marrakesh: wins found on 0 of 2 (95% interval 0%–66%); no wrong winner reported | [03_hardware](notebooks/03_hardware.ipynb) |
+| **Real hardware** | 48 boards on ibm_marrakesh: wins found on 22 of 32 (95% interval 51%–82%); no wrong winner reported | [03_hardware](notebooks/03_hardware.ipynb) |
 <!-- results:end -->
-
-Every number above is computed by `scripts/readme_results.py` from the code
-and the saved runs in `results/`; the notebooks compute the same numbers.
 
 ## Read the notebooks
 
@@ -30,7 +27,7 @@ and the saved runs in `results/`; the notebooks compute the same numbers.
 | :--- | :--- |
 | **1. How it works** ([rendered](https://nbviewer.org/github/RyanPrax/Quantum-TicTacToe/blob/main/notebooks/01_how_it_works.ipynb) · [source](notebooks/01_how_it_works.ipynb)) | The circuit piece by piece on a perfect simulator, why exactly one Grover iteration, and how it went from 22 qubits to 12. |
 | **2. Noise** ([rendered](https://nbviewer.org/github/RyanPrax/Quantum-TicTacToe/blob/main/notebooks/02_noise.ipynb) · [source](notebooks/02_noise.ipynb)) | The circuit on simulated copies of IBM's three free-plan devices, and how the noise measured in a run compares with IBM's published figures. |
-| **3. Real hardware** ([rendered](https://nbviewer.org/github/RyanPrax/Quantum-TicTacToe/blob/main/notebooks/03_hardware.ipynb) · [source](notebooks/03_hardware.ipynb)) | Every job run on a real IBM device: the noise measured in it, every board, and what worked and what did not. |
+| **3. Real hardware** ([rendered](https://nbviewer.org/github/RyanPrax/Quantum-TicTacToe/blob/main/notebooks/03_hardware.ipynb) · [source](notebooks/03_hardware.ipynb)) | Every job run on a real IBM device: the noise measured in it, every board at a glance (and one at a time in a board browser when run), and the findings and limitations. |
 
 Each notebook opens with its question and result, and Part 1 ends with a
 glossary. The "rendered" links open them on nbviewer, which is faster and more

@@ -32,8 +32,13 @@ class Job:
 
     @property
     def label(self) -> str:
-        """Provider, device and day, e.g. "ibm ibm_kingston 2026-11-20"."""
-        return f"{self.backend['provider']} {self.backend['name']} {self.first['created'][:10]}"
+        """Device and day, after the provider unless the device's name starts with it.
+
+        E.g. "ibm_kingston 2026-11-20" (IBM's device names carry the "ibm_" prefix), "ibm fake_berlin 2026-11-20".
+        """
+        provider, name = self.backend["provider"], self.backend["name"]
+        device = name if name.startswith(f"{provider}_") else f"{provider} {name}"
+        return f"{device} {self.first['created'][:10]}"
 
     @property
     def measured_profile(self) -> NoiseProfile:
@@ -156,10 +161,49 @@ def describe(detection: dict) -> str:
 
 
 def verdict(detection: dict) -> str:
-    """"correct", "partly missed" (a double win with one line found), "MISSED" or "WRONG" (a line that is no win)."""
+    """"correct", "partly missed" (a double win with one line found), "missed" or "wrong" (a line that is no win)."""
     true, found = set(detection["true_lines"]), set(detection["lines"])
     if not found <= true:
-        return "WRONG"
+        return "wrong"
     if found == true:
         return "correct"
-    return "partly missed" if found else "MISSED"
+    return "partly missed" if found else "missed"
+
+
+OUTCOMES = ("correct", "correct, false flag", "partly missed", "partly missed, false flag", "missed",
+            "missed, false flag", "wrong", "wrong, false flag")  # best first
+
+
+def outcome(detection: dict) -> str:
+    """The board's verdict, with ", false flag" when a losing line reached its cutoff (one of OUTCOMES)."""
+    return verdict(detection) + (", false flag" if detection["rejected"] else "")
+
+
+def margin(detection: dict) -> float:
+    """How clearly the board was scored, as count ÷ cutoff.
+
+    For a board with a winner, its weakest winning line (below 1: missed); for a no-win board, its highest
+    losing line (at or above 1: a false flag).
+    """
+    ratios = [c / k for c, k in zip(detection["counts"], detection["cutoffs"], strict=True)]
+    if detection["true_lines"]:
+        return min(ratios[i] for i in detection["true_lines"])
+    return max(ratios)
+
+
+def examples(entries: list[tuple], limit: int) -> list[tuple]:
+    """A typical board of each kind and outcome: the one with the median margin in its group.
+
+    entries: (job label, board number, detection). The correct boards of each kind come first, then the others
+    by kind and outcome, up to limit.
+    """
+    groups = defaultdict(list)
+    for entry in entries:
+        groups[entry[2]["label"], outcome(entry[2])].append(entry)
+    kinds = ("single_win", "double_win", "no_win")
+    keys = sorted(groups, key=lambda key: (key[1] != "correct", kinds.index(key[0]), OUTCOMES.index(key[1])))
+    picked = []
+    for key in keys[:limit]:
+        group = sorted(groups[key], key=lambda entry: margin(entry[2]))
+        picked.append(group[(len(group) - 1) // 2])
+    return picked

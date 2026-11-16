@@ -93,12 +93,12 @@ _SHARE_LABELS = ((3.4, 2.5), (3.4, 1.5), (3.4, 0.5), (0.5, -0.3), (1.5, -0.3), (
 
 
 def board_result(ax, board: Sequence[str], counts: Sequence[int], cutoffs: Sequence[int] | None = None,
-                 winners=(), rejected=(), title: str | None = None) -> None:
+                 winners=(), rejected=(), title: str | None = None, shares: bool = True) -> None:
     """A board with the circuit's output drawn on it: every line through its cells, as thick as its share of shots.
 
     Green: a real winning line. Orange, dashed: flagged (reached its cutoff) and rejected by the check. Gray: a
-    losing line. Each line's index and share are written where it leaves the board, in bold when it reached its
-    cutoff.
+    losing line. Each line's index (and its share, when shares is True) is written where it leaves the board, in
+    bold when it reached its cutoff.
     """
     winners, rejected = set(winners), set(rejected)
     shots = sum(counts)
@@ -115,10 +115,10 @@ def board_result(ax, board: Sequence[str], counts: Sequence[int], cutoffs: Seque
         ax.plot([x0, x1], [y0, y1], color=color, linewidth=1 + 30 * share, alpha=0.6 if i in winners else 0.45,
                 linestyle="--" if i in rejected else "-", solid_capstyle="round", zorder=2)
         flagged = cutoffs is not None and counts[i] >= cutoffs[i]
-        ax.text(*_SHARE_LABELS[i], f"{i}: {share:.0%}", ha="center", va="center", fontsize=7,
-                fontweight="bold" if flagged else "normal", color=color if color != LOSE else "dimgray")
+        ax.text(*_SHARE_LABELS[i], f"{i}: {share:.0%}" if shares else str(i), ha="center", va="center",
+                fontsize=8, fontweight="bold" if flagged else "normal", color=color if color != LOSE else "dimgray")
     if title:
-        ax.set_title(title, fontsize=7)
+        ax.set_title(title, fontsize=8)
 
 
 def board_results(panels: Sequence[tuple[Sequence[str], Sequence[int], Sequence[int] | None, Sequence[int],
@@ -126,21 +126,22 @@ def board_results(panels: Sequence[tuple[Sequence[str], Sequence[int], Sequence[
     """A grid of board_result panels: (board, counts, cutoffs, winning lines, rejected lines, panel title)."""
     rows = -(-len(panels) // cols)
     cols = min(cols, len(panels))
-    fig, axes = plt.subplots(rows, cols, figsize=(2.9 * cols, 3.0 * rows + 0.4), squeeze=False)
+    fig, axes = plt.subplots(rows, cols, figsize=(2.9 * cols, 2.9 * rows + 0.6), squeeze=False, layout="constrained")
     for ax, (board, counts, cutoffs, winners, rejected, panel) in zip(axes.flat, panels, strict=False):
         board_result(ax, board, counts, cutoffs, winners, rejected, panel)
     for ax in axes.flat[len(panels):]:
         ax.axis("off")
     if title:
         fig.suptitle(title, fontsize=10)
-    handles = [Line2D([], [], color=WIN, linewidth=5, alpha=0.6, label="winning line"),
-               Line2D([], [], color=LOSE, linewidth=5, alpha=0.45, label="losing line"),
-               Line2D([], [], color=REJECTED, linewidth=3, linestyle="--", label="flagged, rejected"),
-               Line2D([], [], color="none", label="thickness: share of shots; bold %: reached cutoff")]
-    fig.legend(handles=handles, loc="lower center", ncol=2 if cols < 3 else 4, fontsize=7, frameon=False)
-    height = fig.get_size_inches()[1]
-    fig.tight_layout(rect=(0, 0.35 / height * (2 if cols < 3 else 1), 1, 1 - (0.3 / height if title else 0)))
+    fig.legend(handles=_board_handles(), loc="outside lower center", ncol=3, fontsize=8, frameon=False,
+               title="thickness: share of shots; bold: reached its cutoff", title_fontsize=8)
     return fig
+
+
+def _board_handles() -> list:
+    return [Line2D([], [], color=WIN, linewidth=5, alpha=0.6, label="winning line"),
+            Line2D([], [], color=LOSE, linewidth=5, alpha=0.45, label="losing line"),
+            Line2D([], [], color=REJECTED, linewidth=3, linestyle="--", label="flagged, rejected by the check")]
 
 
 def line_key(bits: bool = True):
@@ -178,6 +179,14 @@ def line_bars(ax, values: Sequence[float], winners=(), rejected=(), cutoffs: Seq
 
 def line_legend(fig, cutoffs: bool = True, rejected: bool = True, even: bool = True) -> float:
     """The shared legend under the figure; returns the share of the figure's height it takes (for tight_layout)."""
+    handles = _bar_handles(cutoffs, rejected, even)
+    width, height = fig.get_size_inches()
+    ncol = len(handles) if width >= 11 else 3
+    fig.legend(handles=handles, loc="lower center", ncol=ncol, fontsize=8, frameon=False)
+    return 0.3 * -(-len(handles) // ncol) / height
+
+
+def _bar_handles(cutoffs: bool = True, rejected: bool = True, even: bool = True) -> list:
     handles = [Patch(color=WIN, label="winning line"), Patch(color=LOSE, label="losing line")]
     if rejected:
         handles.append(Patch(facecolor=REJECTED, hatch=REJECTED_HATCH, edgecolor="white",
@@ -186,10 +195,7 @@ def line_legend(fig, cutoffs: bool = True, rejected: bool = True, even: bool = T
         handles.append(Line2D([], [], color="black", linewidth=1.5, label="cutoff"))
     if even:
         handles.append(Line2D([], [], color="gray", linestyle=":", label="1/8 (even spread)"))
-    width, height = fig.get_size_inches()
-    ncol = len(handles) if width >= 11 else 3
-    fig.legend(handles=handles, loc="lower center", ncol=ncol, fontsize=8, frameon=False)
-    return 0.3 * -(-len(handles) // ncol) / height
+    return handles
 
 
 def probability_bars(panels: Mapping[str, tuple[Sequence[float], Sequence[int]]], ylabel: str = "probability",
@@ -267,7 +273,7 @@ def circuit_versions(rows: Sequence[tuple[str, int, int, float]], title: str):
 def grover_iterations(max_iterations: int = 3):
     """Total probability on the winning lines after k Grover iterations, M = 1 and M = 2 of 8 marked."""
     ks = np.arange(max_iterations + 1)
-    fig, ax = plt.subplots(figsize=(6, 3))
+    fig, ax = plt.subplots(figsize=(7.5, 3))
     for m, style in ((1, "o-"), (2, "s--")):
         ax.plot(ks, np.sin((2 * ks + 1) * np.arcsin(np.sqrt(m / 8))) ** 2, style, label=f"M = {m} winning line(s)")
     ax.axhline(2 / 8, color="gray", linestyle=":", linewidth=1, label="M = 2 by chance (2 of 8)")
@@ -276,14 +282,14 @@ def grover_iterations(max_iterations: int = 3):
     ax.set_xlabel("Grover iterations")
     ax.set_ylabel("probability on winning lines")
     ax.set_title("1 iteration is the only count that separates single, double and no win", fontsize=9)
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
     fig.tight_layout()
     return fig
 
 
 def grover_rotation():
     """The state as a vector in the (|bad>, |good>) plane after k = 0, 1, 2 iterations, M = 1 and M = 2."""
-    fig, ax = plt.subplots(figsize=(4.2, 4.2))
+    fig, ax = plt.subplots(figsize=(5.2, 3.9))
     ax.add_patch(plt.Circle((0, 0), 1, fill=False, color="lightgray"))
     for m, color in ((1, "tab:blue"), (2, "tab:orange")):
         theta = math.asin(math.sqrt(m / 8))
@@ -291,9 +297,11 @@ def grover_rotation():
             angle = (2 * k + 1) * theta
             ax.annotate("", xy=(math.cos(angle), math.sin(angle)), xytext=(0, 0),
                         arrowprops={"arrowstyle": "->", "color": color, "alpha": alpha, "linewidth": 2})
-            ax.text(1.08 * math.cos(angle), 1.08 * math.sin(angle), f"M={m}, k={k}", color=color, alpha=alpha,
-                    fontsize=7, ha="center", va="center")
-    ax.set_xlim(-1.25, 1.25)
+            side = math.cos(angle)  # labels left of the vertical end at the tip, labels right of it start there
+            ha, va = ("center", "bottom") if abs(side) < 0.1 else ("left" if side > 0 else "right", "center")
+            ax.text(1.06 * math.cos(angle), 1.06 * math.sin(angle), f"M={m}, k={k}", color=color,
+                    alpha=max(alpha, 0.6), fontsize=8, ha=ha, va=va)
+    ax.set_xlim(-1.55, 1.55)
     ax.set_ylim(-0.2, 1.25)
     ax.set_aspect("equal")
     ax.set_xlabel("|bad⟩ (losing lines)")
@@ -371,53 +379,259 @@ def found_by_job(rows: Sequence[tuple[str, int, int]], title: str):
     return fig
 
 
-def readout_matrices(profiles: Mapping[str, object]):
-    """One readout matrix A per job. profiles: {job label: NoiseProfile}."""
-    fig, axes = plt.subplots(1, len(profiles), figsize=(3.4 * len(profiles), 3.2), squeeze=False)
-    image = None
-    for ax, (label, profile) in zip(axes[0], profiles.items(), strict=True):
-        image = ax.imshow(profile.readout, cmap="viridis", vmin=0, vmax=1)
-        ax.set_xlabel("prepared line index")
-        ax.set_ylabel("measured line index")
-        ax.set_title(f"Readout matrix A\n{label}", fontsize=9)
-    fig.colorbar(image, ax=axes[0].tolist(), fraction=0.046)
-    return fig
+def readout_diagonals(profiles: Mapping[str, object], title: str):
+    """How often each prepared line index is read back correctly (readout matrix A's diagonal), per job.
 
-
-def board_bars(detections: Sequence[tuple[int, dict, str]], title: str, cols: int = 5):
-    """Every board's counts. detections: (board number, saved detection, panel title)."""
-    rows = -(-len(detections) // cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(2.6 * cols, 2.4 * rows), sharey=True, squeeze=False)
-    for ax, (_, r, panel) in zip(axes.flat, detections, strict=False):
-        shots = r["shots"]
-        line_bars(ax, [c / shots for c in r["counts"]], r["true_lines"], r["rejected"],
-                  [k / shots for k in r["cutoffs"]], even=1 / 8)
-        ax.set_title(panel, fontsize=6, wrap=True)
-        ax.set_ylim(0, 1)
-    for ax in axes.flat[len(detections):]:
-        ax.axis("off")
-    fig.suptitle(title)
-    fig.tight_layout(rect=(0, line_legend(fig), 1, 1))
-    return fig
-
-
-def measured_vs_predicted(numbered: Sequence[tuple[int, dict]], models: Mapping[str, object], title: str):
-    """Share of shots on each board's winning lines: measured, and predicted by each noise profile."""
-    wins = [r for _, r in numbered]
-    width = 0.8 / (len(models) + 1)
-    x = np.arange(len(wins))
-    measured = [sum(r["counts"][i] for i in r["true_lines"]) / r["shots"] for r in wins]
-    fig, ax = plt.subplots(figsize=(0.45 * len(wins) + 2.5, 3))
-    ax.bar(x, measured, width, label="hardware result", color=WIN)
-    for k, ((name, profile), hatch) in enumerate(zip(models.items(), ("", "..", "xx"), strict=False), start=1):
-        predicted = [sum(profile.predicted_for(r["true_lines"])[i] for i in r["true_lines"]) for r in wins]
-        ax.bar(x + k * width, predicted, width, label=name, alpha=0.7, hatch=hatch)
-    ax.axhline(1 / 8, color="gray", linestyle=":", linewidth=1)
-    ax.set_xticks(x + width * len(models) / 2, [f"#{number}" for number, _ in numbered], fontsize=7)
-    ax.set_xlabel("board (numbers as in the table above)")
-    ax.set_ylabel("share of shots on winning lines")
-    ax.set_ylim(0, 1)
+    profiles: {job label: NoiseProfile}.
+    """
+    fig, ax = plt.subplots(figsize=(7.5, 2.8))
+    offsets = np.linspace(-0.25, 0.25, len(profiles)) if len(profiles) > 1 else [0.0]
+    low = 1.0
+    for offset, (label, profile) in zip(offsets, profiles.items(), strict=True):
+        diagonal = [profile.readout[i][i] for i in range(NUM_LINES)]
+        low = min(low, *diagonal)
+        ax.plot(np.arange(NUM_LINES) + offset, diagonal, "o", markersize=5, label=label)
+    ax.set_xticks(range(NUM_LINES))
+    ax.set_ylim(min(0.9, low - 0.01), 1.0)
+    ax.set_xlabel("prepared line index")
+    ax.set_ylabel("read back correctly")
+    ax.spines[["top", "right"]].set_visible(False)
     ax.set_title(title, fontsize=9)
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
+    fig.tight_layout()
+    return fig
+
+
+def _shares(detection: dict) -> tuple[list[float], list[float]]:
+    """A saved board's share of shots on each line index, and each line's cutoff as a share."""
+    shots = detection["shots"]
+    return [c / shots for c in detection["counts"]], [k / shots for k in detection["cutoffs"]]
+
+
+def _caption(job: str, number: int, detection: dict) -> str:
+    from qttt.analysis import describe, outcome
+
+    found = " and ".join(SHORT_LINE_NAMES[i] for i in detection["lines"]) or "nothing"
+    return f"{job} #{number}: {describe(detection)}\nfound: {found} ({outcome(detection)})"
+
+
+def board_detail(fig, detection: dict, title: str | None = None, top: float | None = None) -> None:
+    """One saved board on a figure (or subfigure): the board with its output drawn on it, and its bars.
+
+    The bars use the shared style, with each line's cutoff and 1/8 marked; top sets the bars' y-axis limit.
+    """
+    board_ax, bars_ax = fig.subplots(1, 2, width_ratios=(1, 1.25))
+    shares, cutoffs = _shares(detection)
+    board_result(board_ax, tuple(detection["board"]), detection["counts"], detection["cutoffs"],
+                 detection["true_lines"], detection["rejected"], shares=False)
+    line_bars(bars_ax, shares, detection["true_lines"], detection["rejected"], cutoffs, even=1 / 8)
+    bars_ax.set_ylim(0, top or _bars_top([detection]))
+    bars_ax.set_xlabel("line index", fontsize=8)
+    bars_ax.set_ylabel("share of shots", fontsize=8)
+    bars_ax.tick_params(labelsize=7)
+    bars_ax.spines[["top", "right"]].set_visible(False)
+    if title:
+        fig.suptitle(title, fontsize=8)
+
+
+def _bars_top(detections: Sequence[dict]) -> float:
+    """A y-axis limit that fits every bar and cutoff of these boards, rounded up to 0.05 (at least 0.3)."""
+    highest = max(max(max(shares), max(cutoffs)) for shares, cutoffs in map(_shares, detections))
+    return max(0.3, math.ceil(highest * 1.1 * 20) / 20)
+
+
+def board_details(entries: Sequence[tuple[str, int, dict]], title: str | None = None, cols: int = 2):
+    """A grid of board_detail panels on one y scale. entries: (job label, board number, saved detection)."""
+    rows = -(-len(entries) // cols)
+    cols = min(cols, len(entries))
+    fig = plt.figure(figsize=(5.8 * cols, 2.7 * rows + 0.8), layout="constrained")
+    top = _bars_top([r for _, _, r in entries])
+    for sub, (job, number, r) in zip(fig.subfigures(rows, cols, squeeze=False).flat, entries, strict=False):
+        board_detail(sub, r, _caption(job, number, r), top)
+    if title:
+        fig.suptitle(title, fontsize=10)
+    fig.legend(handles=_bar_handles(), loc="outside lower center", ncol=5, fontsize=8, frameon=False)
+    return fig
+
+
+_KINDS = ("single_win", "double_win", "no_win")  # the browser's and the examples' order
+
+
+class BoardBrowser:
+    """Every saved board, one at a time, filtered by job, kind of board and outcome (needs ipywidgets).
+
+    Display it in a notebook. Without a running kernel (on GitHub, say) only its text stands in for it.
+    entries: (job label, board number, saved detection).
+    """
+
+    STATIC_TEXT = "[Board browser: run this notebook in Jupyter or VS Code to step through every board.]"
+
+    def __init__(self, entries: Sequence[tuple[str, int, dict]]):
+        import ipywidgets as widgets
+
+        from qttt.analysis import OUTCOMES, outcome
+
+        def order(entry):
+            r = entry[2]
+            return _KINDS.index(r["label"]), OUTCOMES.index(outcome(r)), entry[0], entry[1]
+
+        self.entries = sorted(entries, key=order)
+        present = lambda values: list(dict.fromkeys(values))  # noqa: E731
+        self.job = widgets.Dropdown(options=["all jobs", *present(e[0] for e in self.entries)], description="job")
+        self.kind = widgets.Dropdown(description="board", options=["all boards", *present(
+            e[2]["label"].replace("_", " ") for e in self.entries)])
+        self.outcome = widgets.Dropdown(description="outcome", options=["all outcomes", *present(
+            outcome(e[2]) for e in sorted(self.entries, key=lambda e: OUTCOMES.index(outcome(e[2]))))])
+        self.slider = widgets.IntSlider(min=1, max=1, description="#", continuous_update=False)
+        previous, following = widgets.Button(description="◀ previous"), widgets.Button(description="next ▶")
+        self.status = widgets.HTML()
+        self.output = widgets.Output()
+        self._outcome = outcome
+
+        previous.on_click(lambda _: self._step(-1))
+        following.on_click(lambda _: self._step(1))
+        for control in (self.job, self.kind, self.outcome):
+            control.observe(lambda _: self._filter(), names="value")
+        self.slider.observe(lambda _: self._quiet or self._draw(), names="value")
+        self._quiet = False
+        self.widget = widgets.VBox([widgets.HBox([self.job, self.kind, self.outcome]),
+                                    widgets.HBox([previous, self.slider, following, self.status]), self.output])
+        self._filter()
+
+    def shown(self) -> list[tuple[str, int, dict]]:
+        """The entries the current filters let through, in browsing order."""
+        return [e for e in self.entries
+                if self.job.value in ("all jobs", e[0])
+                and self.kind.value in ("all boards", e[2]["label"].replace("_", " "))
+                and self.outcome.value in ("all outcomes", self._outcome(e[2]))]
+
+    def _filter(self) -> None:
+        self._quiet = True  # the slider moves twice here; draw once at the end
+        self.slider.max = max(1, len(self.shown()))
+        self.slider.value = 1
+        self._quiet = False
+        self._draw()
+
+    def _step(self, by: int) -> None:
+        self.slider.value = min(self.slider.max, max(1, self.slider.value + by))
+
+    def _draw(self) -> None:
+        from IPython.display import display
+
+        shown = self.shown()
+        self.status.value = f"board {self.slider.value} of {len(shown)}" if shown else "no board matches"
+        with self.output:
+            self.output.clear_output(wait=True)
+            if shown:
+                job, number, r = shown[self.slider.value - 1]
+                fig = plt.figure(figsize=(7.5, 3.3), layout="constrained")
+                board_detail(fig, r, _caption(job, number, r))
+                fig.legend(handles=_bar_handles(), loc="outside lower center", ncol=3, fontsize=7, frameon=False)
+                display(fig)
+                plt.close(fig)
+
+    def _repr_mimebundle_(self, **kwargs):
+        return {**self.widget._repr_mimebundle_(**kwargs), "text/plain": self.STATIC_TEXT}
+
+
+def cutoff_margins(detections: Sequence[dict], title: str):
+    """Every line of every board as one dot: its count divided by its cutoff, grouped by kind of line.
+
+    A winning line at or above 1 was found; below 1 it was missed. A losing line at or above 1 was flagged and
+    then rejected by the check (orange x).
+    """
+    groups = {"winning lines\nsingle wins": [], "winning lines\ndouble wins": [],
+              "losing lines\nboards with a winner": [], "losing lines\nno-win boards": []}
+    for r in detections:
+        for i, (count, cutoff) in enumerate(zip(r["counts"], r["cutoffs"], strict=True)):
+            if i in r["true_lines"]:
+                key = "winning lines\nsingle wins" if len(r["true_lines"]) == 1 else "winning lines\ndouble wins"
+            else:
+                key = "losing lines\nboards with a winner" if r["true_lines"] else "losing lines\nno-win boards"
+            groups[key].append((count / cutoff, i in r["rejected"]))
+    groups = {name: points for name, points in groups.items() if points}
+
+    rng = np.random.default_rng(0)  # the same jitter every run
+    fig, ax = plt.subplots(figsize=(7.5, 3.4))
+    labels = []
+    for x, (name, points) in enumerate(groups.items()):
+        winning = name.startswith("winning")
+        ratios = np.array([ratio for ratio, _ in points])
+        flagged = np.array([rejected for _, rejected in points])
+        jitter = x + rng.uniform(-0.3, 0.3, len(points))
+        alpha = max(0.15, min(0.8, 30 / len(points)))
+        if winning:
+            ax.scatter(jitter, ratios, s=14, color=WIN, alpha=max(alpha, 0.4), linewidths=0)
+            labels.append(f"{name}\nfound {int((ratios >= 1).sum())} of {len(points)}")
+        else:
+            ax.scatter(jitter[~flagged], ratios[~flagged], s=10, color=LOSE, alpha=alpha, linewidths=0)
+            ax.scatter(jitter[flagged], ratios[flagged], s=24, color=REJECTED, marker="x")
+            labels.append(f"{name}\nflagged {int(flagged.sum())} of {len(points)}")
+    ax.axhline(1, color="black", linewidth=1.2)
+    ax.text(len(groups) - 0.5, 1, " cutoff", va="center", ha="left", fontsize=8)
+    ax.set_xticks(range(len(groups)), labels, fontsize=8)
+    ax.set_xlim(-0.5, len(groups) - 0.5)
+    ax.set_ylabel("count ÷ cutoff")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title(title, fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def found_by_line(found: Sequence[int], boards: Sequence[int], title: str):
+    """Share of winning lines found, by line index, with 95% Wilson intervals.
+
+    found[i]: boards where line i was a winning line and was confirmed; boards[i]: boards where it was a winning
+    line.
+    """
+    from qttt.stats import wilson_interval
+
+    fig, ax = plt.subplots(figsize=(7.5, 2.8))
+    for i, (k, n) in enumerate(zip(found, boards, strict=True)):
+        if not n:
+            ax.text(i, 0.02, "none", ha="center", fontsize=7, color="dimgray")
+            continue
+        low, high = wilson_interval(k, n)
+        ax.bar(i, k / n, color=WIN, alpha=0.8)
+        ax.errorbar(i, k / n, yerr=[[k / n - low], [high - k / n]], color="black", capsize=3)
+        ax.text(i, 1.03, f"{k}/{n}", ha="center", fontsize=7)
+    ax.set_xticks(range(NUM_LINES), [f"{i}: {SHORT_LINE_NAMES[i]}" for i in range(NUM_LINES)], fontsize=7,
+                  rotation=20, ha="right")
+    ax.set_ylim(0, 1.1)
+    ax.set_ylabel("share found")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title(title, fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def predicted_vs_measured(points: Mapping[str, Sequence[tuple[float, float, bool]]], title: str):
+    """Share of shots on each board's winning lines, measured against each model's prediction (one dot per board).
+
+    points: {model name: [(predicted, measured, double win)]}. On the diagonal, the model is exact.
+    """
+    fig, ax = plt.subplots(figsize=(5.2, 4.2))
+    highest = 0.0
+    for rows, color in zip(points.values(), ("tab:blue", "tab:orange", "tab:purple"), strict=False):
+        for double, marker in ((False, "o"), (True, "^")):
+            chosen = [(p, m) for p, m, d in rows if d == double]
+            if chosen:
+                x, y = zip(*chosen, strict=True)
+                ax.scatter(x, y, s=22, color=color, marker=marker, alpha=0.6, linewidths=0)
+                highest = max(highest, *x, *y)
+    top = min(1.0, math.ceil(highest * 1.15 * 10) / 10)
+    ax.plot([0, top], [0, top], color="black", linewidth=1, linestyle="--")
+    ax.set_xlim(0, top)
+    ax.set_ylim(0, top)
+    ax.set_aspect("equal")
+    ax.set_xlabel("predicted share on the winning lines")
+    ax.set_ylabel("measured share")
+    handles = [Line2D([], [], color=color, marker="o", linestyle="none", label=name)
+               for name, color in zip(points, ("tab:blue", "tab:orange", "tab:purple"), strict=False)]
+    handles += [Line2D([], [], color="gray", marker=m, linestyle="none", label=label)
+                for m, label in (("o", "single win"), ("^", "double win"))]
+    handles.append(Line2D([], [], color="black", linestyle="--", label="exact prediction"))
+    ax.legend(handles=handles, fontsize=7, loc="upper left")
+    ax.set_title(title, fontsize=9)
     fig.tight_layout()
     return fig
