@@ -95,4 +95,4 @@ def test_hardware_notebook_compares_with_published_data(tmp_path):
     (job,) = jobs(RunStore(tmp_path), hardware_only=False)
     assert job.published_profile is not None  # so the notebook draws the published-data bars
     text = _present_simulated_jobs(tmp_path)
-    assert "ibm fake_berlin" in text and "Sampler options: none" in text
+    assert "ibm fake_berlin" in text and "error suppression: off" in text
