@@ -20,7 +20,7 @@ from nbclient import NotebookClient
 ROOT = Path(__file__).resolve().parent.parent
 NOTEBOOKS = ROOT / "notebooks"
 SOURCE = ROOT / "src" / "qttt"
-TIMEOUT = 1800  # seconds per cell
+TIMEOUT = 7200  # seconds per cell: 02_noise's device simulations take over 30 minutes on a GitHub runner
 
 
 def notebook_paths(names=()):
