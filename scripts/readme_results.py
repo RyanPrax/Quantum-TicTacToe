@@ -76,16 +76,19 @@ def hardware_row():
     if not saved:
         return "No hardware job saved yet"
     detections = [d for job in saved for d in job.detections]
-    with_winner = [d for d in detections if d["true_lines"]]
-    found = sum(bool(d["lines"]) for d in with_winner)
-    low, high = wilson_interval(found, len(with_winner))
     assert not wrong_winners(detections)
-    devices = ", ".join(sorted({job.backend["name"] for job in saved}))
     suppression = {job.suppression for job in saved}
     suppression = (f"error suppression {suppression.pop()}" if len(suppression) == 1
                    else "error suppression differs between jobs")
-    return (f"{len(detections)} boards on {devices} ({suppression}): wins found on {found} of {len(with_winner)} "
-            f"(95% interval {low:.0%}–{high:.0%}); no wrong winner reported")
+    # One rate per job, as in 03_hardware: devices differ too much for a pooled rate to describe any of them.
+    parts = []
+    for job in saved:
+        with_winner = [d for d in job.detections if d["true_lines"]]
+        found = sum(bool(d["lines"]) for d in with_winner)
+        low, high = wilson_interval(found, len(with_winner))
+        parts.append(f"{job.label} {found} of {len(with_winner)} ({low:.0%}–{high:.0%})")
+    return (f"{len(detections)} boards in {len(saved)} job{'s' if len(saved) > 1 else ''} ({suppression}); "
+            f"wins found, with 95% intervals: {', '.join(parts)}; no wrong winner reported")
 
 
 def main():

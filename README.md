@@ -18,7 +18,7 @@ on IBM's quantum computers.
 | :--- | :--- | :--- |
 | **Circuit** | 22 → 12 qubits, 2702 → 481 two-qubit gates (5.6× fewer), chance no gate fails (ESP) 0.2% → 44.5% on a simulated ibm_kingston | [01_how_it_works](notebooks/01_how_it_works.ipynb) |
 | **Simulated noise** | Signal survives on all 3 free-plan devices, but measured noise is 0.03–0.14 above IBM's published figures; shots for ≤1% missed wins: kingston 256 (published data: 64), marrakesh 1536 (published data: 128), fez 7616 (published data: 192) | [02_noise](notebooks/02_noise.ipynb) |
-| **Real hardware** | 612 boards on ibm_fez, ibm_kingston, ibm_marrakesh (error suppression off): wins found on 206 of 358 (95% interval 52%–63%); no wrong winner reported | [03_hardware](notebooks/03_hardware.ipynb) |
+| **Real hardware** | 612 boards in 3 jobs (error suppression off); wins found, with 95% intervals: ibm_marrakesh 2026-11-16 22 of 32 (51%–82%), ibm_kingston 2026-11-16 163 of 163 (98%–100%), ibm_fez 2026-11-16 21 of 163 (9%–19%); no wrong winner reported | [03_hardware](notebooks/03_hardware.ipynb) |
 <!-- results:end -->
 
 ## Read the notebooks
